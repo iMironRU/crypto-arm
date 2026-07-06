@@ -80,13 +80,17 @@
   .certSearch{border:none;border-bottom:1px solid var(--line);border-radius:0;padding:11px 14px}
   .certSearch:focus{box-shadow:none;border-color:var(--line)}
   .certList{max-height:280px;overflow:auto;padding:6px}
-  .cert{border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:2px;cursor:pointer;
-    background:transparent;border:1px solid transparent}
+  .cert{display:flex;align-items:flex-start;gap:10px;border-radius:var(--radius-sm);padding:10px 12px;
+    margin-bottom:2px;cursor:pointer;background:transparent;border:1px solid transparent}
   .cert:hover{background:var(--field)}
   .cert.on{border-color:var(--seal);background:var(--seal-soft)}
+  .cert input[type=checkbox]{flex:none;width:16px;height:16px;margin:2px 0 0;accent-color:var(--seal);cursor:pointer}
+  .cert .certInfo{flex:1;min-width:0}
   .cert .who{font-weight:600;font-size:13.5px}
   .cert .meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:3px;word-break:break-all}
   .certEmpty{padding:16px;text-align:center;color:var(--muted);font-size:13px}
+  .certPanelFooter{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:9px 14px;border-top:1px solid var(--line);background:var(--field)}
 
   .log{font-family:var(--mono);font-size:12.5px;background:#181917;color:#d7d5cc;padding:14px;
     white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;border-radius:0 0 var(--radius) var(--radius)}
@@ -158,8 +162,13 @@
         <div class="certPanel" id="certPanel" hidden>
           <input type="text" id="certSearch" class="certSearch" placeholder="Поиск по имени или номеру сертификата…">
           <div class="certList" id="certs"></div>
+          <div class="certPanelFooter">
+            <span id="certSelectedCount" class="note" style="margin:0">0 выбрано</span>
+            <button type="button" class="ghost" id="certDone" style="padding:5px 12px;font-size:12px">Готово</button>
+          </div>
         </div>
       </div>
+      <div class="note" style="margin-top:8px">Можно отметить сразу несколько сертификатов — подпишем документ каждым по очереди, одним файлом на выходе.</div>
     </div>
   </section>
 
@@ -241,9 +250,10 @@ const log = (m, cls='') => {
 };
 
 let pdfBytes = null;         // Uint8Array текущего документа (после подписи заменяется на подписанный)
-let signCount = 0;           // сколько подписей уже стоит в текущем pdfBytes — для чейна подписей
+let signCount = 0;           // сколько подписей уже стоит в текущем pdfBytes — для чейна подписей и разноса штампов
+let originalBaseName = 'document'; // имя загруженного файла без расширения — для имени результата
 let certs = [];              // [{cert, subject, serialHex, from, to, oid}]
-let selected = null;
+let selected = new Set();    // индексы выбранных сертификатов — подписываем каждым по очереди
 
 // ---------- окружение ----------
 // ВАЖНО: window.cadesplugin сам является thenable (Promise). Нельзя возвращать его
@@ -324,7 +334,7 @@ let certStatus = 'loading';   // 'loading' | 'error' | null
 let certFilter = '';
 
 async function loadCerts(){
-  certs = []; selected = null; refreshSignBtn();
+  certs = []; selected = new Set(); refreshSignBtn();
   certStatus = 'loading'; updateCertTrigger(); closeCertPanel();
   try{
     await ensurePlugin();
@@ -360,16 +370,21 @@ async function loadCerts(){
 function cn(dn){ const m=/CN=([^,]+)/.exec(dn); return m?m[1].trim():dn; }
 function fmtDate(d){ return d.toLocaleDateString('ru-RU'); }
 
-// ---------- выпадающий выбор сертификата ----------
+// ---------- выпадающий выбор сертификата (можно отметить несколько) ----------
 function updateCertTrigger(){
   const el = $('certTriggerText'), trigger = $('certTrigger');
   if (certStatus==='loading'){ el.textContent='Открываю хранилище…'; trigger.disabled=true; return; }
   if (certStatus==='error'){ el.textContent='Ошибка чтения хранилища'; trigger.disabled=true; return; }
   if (!certs.length){ el.textContent='Нет валидных сертификатов в хранилище «Личное»'; trigger.disabled=true; return; }
   trigger.disabled=false;
-  if (selected===null){ el.innerHTML=`Выберите сертификат <span class="meta">(${certs.length})</span>`; return; }
-  const c=certs[selected];
-  el.innerHTML=`<span class="who">${cn(c.subject)}</span><span class="meta">до ${fmtDate(c.to)}</span>`;
+  if (selected.size===0){ el.innerHTML=`Выберите сертификат(ы) <span class="meta">(${certs.length})</span>`; return; }
+  if (selected.size===1){
+    const c=certs[[...selected][0]];
+    el.innerHTML=`<span class="who">${cn(c.subject)}</span><span class="meta">до ${fmtDate(c.to)}</span>`;
+    return;
+  }
+  const names=[...selected].sort((a,b)=>a-b).map(i=>cn(certs[i].subject)).join(', ');
+  el.innerHTML=`<span class="who">Выбрано ${selected.size}</span><span class="meta">${names}</span>`;
 }
 
 function renderCerts(){
@@ -377,6 +392,7 @@ function renderCerts(){
   list.innerHTML='';
   if (!certs.length){
     list.innerHTML='<div class="certEmpty">Нет валидных сертификатов в хранилище «Личное».</div>';
+    $('certSelectedCount').textContent='0 выбрано';
     return;
   }
   const q=certFilter.trim().toLowerCase();
@@ -384,22 +400,27 @@ function renderCerts(){
     .filter(({c})=>!q || cn(c.subject).toLowerCase().includes(q) || c.serialHex.toLowerCase().includes(q));
   if (!filtered.length){
     list.innerHTML='<div class="certEmpty">Ничего не найдено</div>';
-    return;
+  } else {
+    filtered.forEach(({c,i})=>{
+      const div=document.createElement('div');
+      const isOn = selected.has(i);
+      div.className='cert'+(isOn?' on':'');
+      div.innerHTML=`<input type="checkbox" ${isOn?'checked':''} tabindex="-1">
+        <div class="certInfo">
+          <div class="who">${cn(c.subject)}</div>
+          <div class="meta">№ ${c.serialHex} · до ${fmtDate(c.to)} · ${HASH_BY_OID[c.oid]?'ГОСТ ok':'алгоритм не поддержан'}</div>
+        </div>`;
+      div.onclick=()=>{
+        if (selected.has(i)) selected.delete(i); else selected.add(i);
+        renderCerts();
+        updateCertTrigger();
+        updateSealPreview();
+        refreshSignBtn();
+      };
+      list.appendChild(div);
+    });
   }
-  filtered.forEach(({c,i})=>{
-    const div=document.createElement('div');
-    div.className='cert'+(selected===i?' on':'');
-    div.innerHTML=`<div class="who">${cn(c.subject)}</div>
-      <div class="meta">№ ${c.serialHex} · до ${fmtDate(c.to)} · ${HASH_BY_OID[c.oid]?'ГОСТ ok':'алгоритм не поддержан'}</div>`;
-    div.onclick=()=>{
-      selected=i;
-      updateCertTrigger();
-      updateSealPreview();
-      refreshSignBtn();
-      closeCertPanel();
-    };
-    list.appendChild(div);
-  });
+  $('certSelectedCount').textContent = selected.size===0 ? '0 выбрано' : `${selected.size} выбрано`;
 }
 
 function openCertPanel(){
@@ -418,6 +439,7 @@ $('certTrigger').addEventListener('click', ()=>{
   $('certPanel').hidden ? openCertPanel() : closeCertPanel();
 });
 $('certSearch').addEventListener('input', e=>{ certFilter=e.target.value; renderCerts(); });
+$('certDone').addEventListener('click', closeCertPanel);
 document.addEventListener('click', e=>{ if (!$('certSelect').contains(e.target)) closeCertPanel(); });
 document.addEventListener('keydown', e=>{ if (e.key==='Escape') closeCertPanel(); });
 
@@ -442,15 +464,19 @@ const SAMPLE_CERT = {
   to: new Date(Date.now()+365*24*3600*1000),
 };
 
-function updateSealPreview(){
-  const sample = selected===null;
-  const c = sample ? SAMPLE_CERT : certs[selected];
-  $('sealPrev').innerHTML =
-    `<div class="seal-preview${sample?' sample':''}">
-       ${sample?'<span class="sampleTag">образец</span>':''}
+function sealCardHtml(c, tag, dashed){
+  return `<div class="seal-preview${dashed?' sample':''}">
+       ${tag?`<span class="sampleTag">${tag}</span>`:''}
        <div class="t">ДОКУМЕНТ ПОДПИСАН ЭЛЕКТРОННОЙ ПОДПИСЬЮ</div>
        <div class="m">${sealLines(c).join('<br>')}</div>
      </div>`;
+}
+function updateSealPreview(){
+  if (selected.size===0){ $('sealPrev').innerHTML = sealCardHtml(SAMPLE_CERT,'образец',true); return; }
+  const ordered = [...selected].sort((a,b)=>a-b);
+  $('sealPrev').innerHTML = ordered
+    .map((i,n)=>sealCardHtml(certs[i], ordered.length>1?`подпись ${n+1} из ${ordered.length}`:null, false))
+    .join('<div style="height:8px"></div>');
 }
 
 // ---------- байтовые утилиты ----------
@@ -527,12 +553,18 @@ async function buildIncremental(src, c){
   let pIdx = parseInt($('page').value,10)||0;
   if (pIdx<=0 || pIdx>pages.length) pIdx = pages.length; // 0 => последняя
   const page = pages[pIdx-1];
-  const { width } = page.getSize();
+  const { width, height } = page.getSize();
 
   // геометрия оттиска (выше на 10пт — под 4-ю строку с датой подписания)
-  const w=230, h=80;
+  const w=230, h=80, gap=10;
   const mr=parseFloat($('mr').value)||40, mb=parseFloat($('mb').value)||40;
-  const x = width - w - mr, y = mb;
+  // при нескольких подписях подряд каждый новый штамп рисуется на своём месте
+  // (иначе они лягут друг на друга) — используем signCount (сколько подписей
+  // уже стоит на документе прямо сейчас) как индекс в стопке; когда столбец
+  // упирается в верх страницы, начинаем новый столбец левее
+  const perColumn = Math.max(1, Math.floor((height-mb)/(h+gap)));
+  const col = Math.floor(signCount/perColumn), row = signCount%perColumn;
+  const x = width - w - mr - col*(w+gap), y = mb + row*(h+gap);
   const signedAt = new Date();
 
   // рисуем штамп — pdf-lib добавляет его отдельным НОВЫМ потоком контента
@@ -647,97 +679,132 @@ function pdfDate(d){
 }
 
 // ---------- главный поток подписания ----------
+// подписывает pdfBytes ОДНИМ сертификатом (инкрементально) и встраивает контейнер;
+// возвращает новый буфер документа — вызывающий код сам решает, что с ним делать
+async function signOnce(c){
+  log('готовлю инкрементальное обновление с placeholder…','dim');
+  const built = await buildIncremental(pdfBytes, c);
+  const buf = new Uint8Array(built.bytes);
+
+  // Ищем /ByteRange НАЧИНАЯ С известного смещения нашей новой подписи
+  // (built.sigOffset), а не с начала файла: если документ уже подписан
+  // раньше, в файле есть чужой /ByteRange и /Contents, и поиск с нуля
+  // нашёл бы их вместо нашей новой подписи.
+  const brPos=findBytes(buf,'/ByteRange',built.sigOffset);
+  if(brPos<0) throw new Error('не нашёл placeholder /ByteRange');
+  const cPos = findBytes(buf,'/Contents',brPos);
+  const open = findBytes(buf,'<',cPos);
+  const close= findBytes(buf,'>',open);
+  if(cPos<0||open<0||close<0) throw new Error('не нашёл placeholder /Contents');
+
+  // считаем ByteRange: исключаем < ... > целиком
+  const a=[0, open, close+1, buf.length-(close+1)];
+  const brStr=`[${a[0]} ${a[1]} ${a[2]} ${a[3]}]`;
+  const brOpen=findBytes(buf,'[',brPos);
+  const brClose=findBytes(buf,']',brOpen);
+  const slotLen=brClose-brOpen+1;
+  if(brStr.length>slotLen) throw new Error('ByteRange не влез в резерв');
+  const padded=brStr+' '.repeat(slotLen-brStr.length);
+  for(let i=0;i<padded.length;i++) buf[brOpen+i]=padded.charCodeAt(i);
+  log('ByteRange = '+brStr,'dim');
+
+  // байты под хеш: всё, кроме <hex>
+  const signable=new Uint8Array(a[1]+a[3]);
+  signable.set(buf.subarray(0,a[1]),0);
+  signable.set(buf.subarray(a[2]),a[1]);
+  const b64=u8ToBase64(signable);
+
+  // хеш ГОСТ считает сам плагин, затем SignHash
+  log('считаю хеш и подписываю (плагин запросит ПИН)…','dim');
+  await ensurePlugin();
+  const cp = window.cadesplugin;
+  const hashed=await cp.CreateObjectAsync('CAdESCOM.HashedData');
+  await hashed.propset_Algorithm(cp[HASH_BY_OID[c.oid]]);
+  await hashed.propset_DataEncoding(CADESCOM_BASE64_TO_BINARY);
+  await hashed.Hash(b64);
+
+  const signer=await cp.CreateObjectAsync('CAdESCOM.CPSigner');
+  await signer.propset_Certificate(c.cert);
+  const sd=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
+  const container=await sd.SignHash(hashed, signer, CADESCOM_CADES_BES);  // base64
+
+  const hex=base64ToHex(container);
+  if(hex.length>SIG_HEX_LEN) throw new Error(`контейнер (${hex.length}) больше резерва (${SIG_HEX_LEN}) — увеличь SIG_HEX_LEN`);
+  const hexPadded=hex+'0'.repeat(SIG_HEX_LEN-hex.length);
+  for(let i=0;i<hexPadded.length;i++) buf[open+1+i]=hexPadded.charCodeAt(i);
+  log('контейнер встроен, '+(hex.length/2|0)+' байт','ok');
+  return buf;
+}
+
+function outputFilename(){
+  return signCount>1 ? `${originalBaseName}-sig${signCount}.pdf` : `${originalBaseName}-sig.pdf`;
+}
+
+// подписывает документ ПО ОЧЕРЕДИ всеми отмеченными сертификатами и отдаёт
+// ОДИН итоговый файл — раньше на каждую подпись нужно было жать «Подписать»
+// заново и каждый раз скачивался отдельный файл, теперь достаточно отметить
+// нужные сертификаты и нажать один раз
 async function sign(){
-  try{
-    $('sign').disabled=true;
-    const c=certs[selected];
-    if(!HASH_BY_OID[c.oid]){ log('алгоритм сертификата не поддержан','err'); $('sign').disabled=false; return; }
+  const list = [...selected].sort((a,b)=>a-b).map(i=>certs[i]);
+  if (!list.length) return;
+  for (const c of list){
+    if (!HASH_BY_OID[c.oid]){
+      log(`алгоритм сертификата не поддержан: ${cn(c.subject)}`,'err');
+      $('env').innerHTML = `<div class="banner err">Сертификат «${cn(c.subject)}» использует неподдерживаемый алгоритм — уберите его из выбора.</div>`;
+      return;
+    }
+  }
 
-    log('готовлю инкрементальное обновление с placeholder…','dim');
-    const built = await buildIncremental(pdfBytes, c);
-    const buf = new Uint8Array(built.bytes);
+  $('sign').disabled=true;
+  let doneCount=0, lastError=null;
+  for (let idx=0; idx<list.length; idx++){
+    const c=list[idx];
+    try{
+      log(`— подпись ${idx+1}/${list.length}: ${cn(c.subject)} —`,'dim');
+      pdfBytes = await signOnce(c);
+      signCount++;
+      doneCount++;
+      log(`✓ подпись ${idx+1}/${list.length} готова`,'ok');
+    }catch(e){
+      lastError=e;
+      log(`✗ подпись ${idx+1}/${list.length} не удалась: ${errText(e)}`,'err');
+      break;
+    }
+  }
 
-    // Ищем /ByteRange НАЧИНАЯ С известного смещения нашей новой подписи
-    // (built.sigOffset), а не с начала файла: если документ уже подписан
-    // раньше, в файле есть чужой /ByteRange и /Contents, и поиск с нуля
-    // нашёл бы их вместо нашей новой подписи.
-    const brPos=findBytes(buf,'/ByteRange',built.sigOffset);
-    if(brPos<0) throw new Error('не нашёл placeholder /ByteRange');
-    const cPos = findBytes(buf,'/Contents',brPos);
-    const open = findBytes(buf,'<',cPos);
-    const close= findBytes(buf,'>',open);
-    if(cPos<0||open<0||close<0) throw new Error('не нашёл placeholder /Contents');
-
-    // считаем ByteRange: исключаем < ... > целиком
-    const a=[0, open, close+1, buf.length-(close+1)];
-    const brStr=`[${a[0]} ${a[1]} ${a[2]} ${a[3]}]`;
-    const brOpen=findBytes(buf,'[',brPos);
-    const brClose=findBytes(buf,']',brOpen);
-    const slotLen=brClose-brOpen+1;
-    if(brStr.length>slotLen) throw new Error('ByteRange не влез в резерв');
-    const padded=brStr+' '.repeat(slotLen-brStr.length);
-    for(let i=0;i<padded.length;i++) buf[brOpen+i]=padded.charCodeAt(i);
-    log('ByteRange = '+brStr,'dim');
-
-    // байты под хеш: всё, кроме <hex>
-    const signable=new Uint8Array(a[1]+a[3]);
-    signable.set(buf.subarray(0,a[1]),0);
-    signable.set(buf.subarray(a[2]),a[1]);
-    const b64=u8ToBase64(signable);
-
-    // хеш ГОСТ считает сам плагин, затем SignHash
-    log('считаю хеш и подписываю (плагин запросит ПИН)…','dim');
-    await ensurePlugin();
-    const cp = window.cadesplugin;
-    const hashed=await cp.CreateObjectAsync('CAdESCOM.HashedData');
-    await hashed.propset_Algorithm(cp[HASH_BY_OID[c.oid]]);
-    await hashed.propset_DataEncoding(CADESCOM_BASE64_TO_BINARY);
-    await hashed.Hash(b64);
-
-    const signer=await cp.CreateObjectAsync('CAdESCOM.CPSigner');
-    await signer.propset_Certificate(c.cert);
-    const sd=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
-    const container=await sd.SignHash(hashed, signer, CADESCOM_CADES_BES);  // base64
-
-    const hex=base64ToHex(container);
-    if(hex.length>SIG_HEX_LEN) throw new Error(`контейнер (${hex.length}) больше резерва (${SIG_HEX_LEN}) — увеличь SIG_HEX_LEN`);
-    const hexPadded=hex+'0'.repeat(SIG_HEX_LEN-hex.length);
-    for(let i=0;i<hexPadded.length;i++) buf[open+1+i]=hexPadded.charCodeAt(i);
-    log('контейнер встроен, '+(hex.length/2|0)+' байт','ok');
-
-    // отдаём файл; сам подписанный буфер оставляем "текущим документом" —
-    // это позволяет сразу подписать его ещё раз другим сертификатом (см. вопрос
-    // "как подписать несколько раз" — каждый sign() лишь дописывает новую
-    // ревизию, поэтому чейн подписей работает без повторной загрузки файла)
-    signCount++;
-    pdfBytes = buf;
-    const fname = signCount===1 ? 'signed.pdf' : `signed-x${signCount}.pdf`;
-    const blob=new Blob([buf],{type:'application/pdf'});
+  let fname=null;
+  if (doneCount>0){
+    fname = outputFilename();
+    const blob=new Blob([pdfBytes],{type:'application/pdf'});
     const url=URL.createObjectURL(blob);
     const a2=document.createElement('a');
     a2.href=url; a2.download=fname; a2.click();
     URL.revokeObjectURL(url);
     $('pdfState').textContent = `${fname} · подписей: ${signCount}`;
+  }
 
-    // сбрасываем выбранный сертификат — чтобы вторую подпись нельзя было
-    // случайно поставить тем же сертификатом не глядя, и явно предложить выбрать другой
-    selected = null;
-    updateCertTrigger();
-    updateSealPreview();
+  // сбрасываем выбор — чтобы следующую подпись нельзя было случайно поставить
+  // тем же набором сертификатов не глядя, и явно предложить выбрать другой
+  selected = new Set();
+  updateCertTrigger();
+  updateSealPreview();
 
-    $('env').innerHTML=`<div class="banner ok">
+  if (lastError){
+    $('env').innerHTML = `<div class="banner err">
+      Подписано ${doneCount} из ${list.length}, дальше прервано ошибкой: ${errText(lastError)}.
+      ${doneCount>0?`Файл с уже поставленными подписями (${fname}) всё равно сохранён.`:''}
+    </div>`;
+  } else {
+    $('env').innerHTML = `<div class="banner ok">
       Готово. ${fname} сохранён (подписей на документе: ${signCount}).<br>
-      Чтобы добавить ещё одну подпись на этот же документ: выбери в блоке «2 · Сертификат» другой сертификат
+      Чтобы добавить ещё подписи на этот же документ: отметь другие сертификаты
       и снова нажми «Подписать» — файл в памяти уже обновлён, повторно загружать его не нужно.<br>
       Проверить результат можно любым верификатором PAdES (КриптоАРМ, Adobe, sign.kloud.one).
     </div>`;
-    log(`✓ документ подписан (подписей: ${signCount})`,'ok');
-  }catch(e){
-    log('ошибка: '+errText(e),'err');
-    $('env').innerHTML='<div class="banner err">Не удалось подписать: '+errText(e)+'</div>';
-  }finally{
-    $('sign').disabled=false;
   }
+  log(`итог: подписано ${doneCount}/${list.length}, всего подписей на документе: ${signCount}`, lastError?'err':'ok');
+  $('sign').disabled=false;
+  refreshSignBtn();
 }
 
 function errText(e){
@@ -751,7 +818,14 @@ function errText(e){
 function loadPdfFile(file){
   if(!file) return;
   const r=new FileReader();
-  r.onload=()=>{ pdfBytes=new Uint8Array(r.result); signCount=0; $('pdfState').textContent=file.name; refreshSignBtn(); log('PDF загружен: '+file.name,'dim'); };
+  r.onload=()=>{
+    pdfBytes=new Uint8Array(r.result);
+    signCount=0;
+    originalBaseName = file.name.replace(/\.pdf$/i,'') || 'document';
+    $('pdfState').textContent=file.name;
+    refreshSignBtn();
+    log('PDF загружен: '+file.name,'dim');
+  };
   r.readAsArrayBuffer(file);
 }
 $('pdf').onchange=e=>loadPdfFile(e.target.files[0]);
@@ -761,12 +835,14 @@ const drop=$('drop');
 drop.addEventListener('drop',e=>loadPdfFile(e.dataTransfer.files[0]));
 
 function refreshSignBtn(){
-  const ok = pdfBytes && selected!==null;
+  const ok = pdfBytes && selected.size>0;
   $('sign').disabled=!ok;
-  $('sign').textContent = signCount>0 ? 'Добавить ещё одну подпись' : 'Подписать и встроить в PDF';
+  const label = selected.size>1 ? `Подписать (${selected.size} шт.) и встроить в PDF`
+    : signCount>0 ? 'Добавить ещё одну подпись' : 'Подписать и встроить в PDF';
+  $('sign').textContent = label;
   $('signHint').textContent = ok ? ''
-    : (signCount>0 ? `документ уже подписан (${signCount}) — выбери ещё один сертификат, чтобы подписать снова`
-                   : 'нужен PDF и выбранный сертификат');
+    : (signCount>0 ? `документ уже подписан (${signCount}) — отметь ещё сертификат(ы), чтобы подписать снова`
+                   : 'нужен PDF и хотя бы один выбранный сертификат');
 }
 $('sign').onclick=sign;
 $('reload').onclick=loadCerts;
