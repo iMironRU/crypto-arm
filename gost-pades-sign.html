@@ -14,56 +14,90 @@
 
 <style>
   :root{
-    --paper:#ecebe6; --ink:#1c1d1a; --muted:#6b6f66;
-    --line:#c9c8c0; --field:#f7f6f2; --seal:#1f5c3d; --seal-soft:#e3ede6;
-    --warn:#8a3a2a; --mono:"SF Mono",ui-monospace,"Cascadia Mono",Menlo,Consolas,monospace;
+    --bg:#f4f3ee; --surface:#ffffff; --ink:#181917; --muted:#767a70;
+    --line:#e3e1d8; --field:#faf9f6; --seal:#1f8a5c; --seal-dark:#166b47; --seal-soft:#e6f4ec;
+    --warn:#c0392b; --warn-soft:#fbe9e6;
+    --mono:"SF Mono",ui-monospace,"Cascadia Mono",Menlo,Consolas,monospace;
+    --radius:14px; --radius-sm:9px;
+    --shadow:0 1px 2px rgba(20,20,15,.04),0 8px 24px -12px rgba(20,20,15,.10);
   }
   *{box-sizing:border-box}
   body{
-    margin:0;background:var(--paper);color:var(--ink);
-    font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-    padding:32px 20px 80px;
+    margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    padding:40px 20px 90px;
   }
-  .wrap{max-width:860px;margin:0 auto}
-  header{border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:24px}
-  h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
-  .sub{color:var(--muted);font-size:13px}
-  section{border:1px solid var(--line);background:#fff;margin-bottom:16px}
-  .head{padding:11px 16px;border-bottom:1px solid var(--line);
-    font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
-    display:flex;justify-content:space-between;align-items:center}
-  .body{padding:16px}
-  label{display:block;font-size:13px;color:var(--muted);margin:0 0 5px}
+  .wrap{max-width:720px;margin:0 auto}
+  header{margin-bottom:28px}
+  h1{font-size:24px;margin:0 0 6px;letter-spacing:-.02em;font-weight:700}
+  .sub{color:var(--muted);font-size:13.5px}
+  section{border:1px solid var(--line);background:var(--surface);margin-bottom:14px;
+    border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  .head{padding:13px 18px;border-bottom:1px solid var(--line);
+    font-size:12px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600;
+    display:flex;justify-content:space-between;align-items:center;background:linear-gradient(180deg,#fff,#fdfdfb)}
+  .body{padding:18px}
+  label{display:block;font-size:13px;color:var(--muted);margin:0 0 6px}
   input[type=text],input[type=number],select,textarea{
-    width:100%;padding:9px 11px;border:1px solid var(--line);background:var(--field);
-    border-radius:0;font:14px/1.4 system-ui;color:var(--ink)}
+    width:100%;padding:10px 12px;border:1px solid var(--line);background:var(--field);
+    border-radius:var(--radius-sm);font:14px/1.4 system-ui;color:var(--ink);
+    transition:border-color .15s,box-shadow .15s}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--seal);box-shadow:0 0 0 3px var(--seal-soft)}
   textarea{font-family:var(--mono);font-size:13px;resize:vertical}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
   @media(max-width:640px){.row,.row3{grid-template-columns:1fr}}
   .field{margin-bottom:14px}
-  .file{border:1.5px dashed var(--line);background:var(--field);padding:20px;text-align:center;color:var(--muted);cursor:pointer}
-  .file:hover{border-color:var(--seal);color:var(--ink)}
+  .field:last-child{margin-bottom:0}
+  .file{border:1.5px dashed var(--line);background:var(--field);padding:26px 16px;text-align:center;
+    color:var(--muted);cursor:pointer;border-radius:var(--radius-sm);
+    transition:border-color .15s,color .15s,background .15s}
+  .file:hover{border-color:var(--seal);color:var(--ink);background:var(--seal-soft)}
   .file input{display:none}
-  button{font:14px system-ui;padding:10px 18px;border:1px solid var(--ink);
-    background:var(--ink);color:#fff;cursor:pointer}
-  button.ghost{background:#fff;color:var(--ink)}
+  button{font:14px/1 system-ui;font-weight:600;padding:10px 18px;border:1px solid var(--ink);
+    border-radius:var(--radius-sm);background:var(--ink);color:#fff;cursor:pointer;
+    transition:opacity .15s,transform .05s}
+  button:hover:not(:disabled){opacity:.88}
+  button:active:not(:disabled){transform:scale(.98)}
+  button.ghost{background:var(--surface);color:var(--ink)}
   button:disabled{opacity:.4;cursor:not-allowed}
-  .primary{background:var(--seal);border-color:var(--seal);font-weight:600}
-  .cert{border:1px solid var(--line);padding:11px 13px;margin-bottom:8px;cursor:pointer;background:var(--field)}
-  .cert:hover{border-color:var(--seal)}
-  .cert.on{border-color:var(--seal);background:var(--seal-soft);box-shadow:inset 3px 0 0 var(--seal)}
-  .cert .who{font-weight:600;font-size:14px}
-  .cert .meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:4px;word-break:break-all}
-  .log{font-family:var(--mono);font-size:12.5px;background:#1c1d1a;color:#d7d5cc;padding:14px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
-  .log .ok{color:#7fc7a0}.log .err{color:#e79b8b}.log .dim{color:#8b8f86}
+  .primary{background:var(--seal);border-color:var(--seal)}
+
+  .certSelect{position:relative}
+  .certTrigger{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
+    background:var(--field);border:1px solid var(--line);color:var(--ink);font-weight:500;
+    padding:11px 14px;text-align:left}
+  .certTrigger:hover:not(:disabled){opacity:1;border-color:var(--seal)}
+  .certTrigger .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .certTrigger .who{font-weight:600}
+  .certTrigger .meta{color:var(--muted);font-size:12px;font-family:var(--mono);margin-left:8px}
+  .certTrigger .chev{flex:none;width:16px;height:16px;color:var(--muted);transition:transform .15s}
+  .certTrigger.open .chev{transform:rotate(180deg)}
+  .certPanel{position:absolute;left:0;right:0;top:calc(100% + 6px);background:var(--surface);
+    border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 12px 32px -8px rgba(20,20,15,.18);
+    z-index:20;overflow:hidden}
+  .certSearch{border:none;border-bottom:1px solid var(--line);border-radius:0;padding:11px 14px}
+  .certSearch:focus{box-shadow:none;border-color:var(--line)}
+  .certList{max-height:280px;overflow:auto;padding:6px}
+  .cert{border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:2px;cursor:pointer;
+    background:transparent;border:1px solid transparent}
+  .cert:hover{background:var(--field)}
+  .cert.on{border-color:var(--seal);background:var(--seal-soft)}
+  .cert .who{font-weight:600;font-size:13.5px}
+  .cert .meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:3px;word-break:break-all}
+  .certEmpty{padding:16px;text-align:center;color:var(--muted);font-size:13px}
+
+  .log{font-family:var(--mono);font-size:12.5px;background:#181917;color:#d7d5cc;padding:14px;
+    white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;border-radius:0 0 var(--radius) var(--radius)}
+  .log .ok{color:#6bd39a}.log .err{color:#f0968a}.log .dim{color:#8b8f86}
   .note{font-size:12.5px;color:var(--muted);margin-top:8px}
-  .seal-preview{border:1.6px solid var(--seal);color:var(--seal);padding:9px 11px;font-size:11px;line-height:1.35;max-width:300px;background:#fff}
+  .seal-preview{border:1.6px solid var(--seal);color:var(--seal);padding:10px 12px;font-size:11px;
+    line-height:1.35;max-width:300px;background:var(--surface);border-radius:var(--radius-sm)}
   .seal-preview .t{font-weight:700;font-size:11.5px;margin-bottom:3px}
   .seal-preview .m{font-family:var(--mono);font-size:10px;color:#3a5c49}
-  .banner{padding:11px 14px;font-size:13px;margin-bottom:16px;border:1px solid}
-  .banner.err{background:#f5e6e1;border-color:var(--warn);color:var(--warn)}
-  .banner.ok{background:var(--seal-soft);border-color:var(--seal);color:var(--seal)}
+  .banner{padding:12px 15px;font-size:13px;margin-bottom:16px;border:1px solid;border-radius:var(--radius-sm)}
+  .banner.err{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
+  .banner.ok{background:var(--seal-soft);border-color:var(--seal);color:var(--seal-dark)}
   .flex{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 </style>
 </head>
@@ -90,7 +124,18 @@
     <div class="head"><span>2 · Сертификат</span>
       <button class="ghost" id="reload" style="padding:5px 12px;font-size:12px">Обновить список</button>
     </div>
-    <div class="body"><div id="certs" class="dim">Загрузка хранилища…</div></div>
+    <div class="body">
+      <div class="certSelect" id="certSelect">
+        <button type="button" class="certTrigger" id="certTrigger" disabled>
+          <span class="txt" id="certTriggerText">Загрузка хранилища…</span>
+          <svg class="chev" viewBox="0 0 20 20" fill="none"><path d="M5 7.5 10 12.5 15 7.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="certPanel" id="certPanel" hidden>
+          <input type="text" id="certSearch" class="certSearch" placeholder="Поиск по имени или номеру сертификата…">
+          <div class="certList" id="certs"></div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section>
@@ -203,9 +248,12 @@ async function initPlugin(){
 }
 
 // ---------- сертификаты ----------
+let certStatus = 'loading';   // 'loading' | 'error' | null
+let certFilter = '';
+
 async function loadCerts(){
-  $('certs').innerHTML = '<span class="dim">Открываю хранилище…</span>';
   certs = []; selected = null; refreshSignBtn();
+  certStatus = 'loading'; updateCertTrigger(); closeCertPanel();
   try{
     await ensurePlugin();
     const cp = window.cadesplugin;
@@ -227,10 +275,12 @@ async function loadCerts(){
       certs.push({ cert:c, subject, serialHex:serial, from:new Date(from), to:new Date(to), oid });
     }
     await store.Close();
+    certStatus = null;
     renderCerts();
+    updateCertTrigger();
     log(`валидных сертификатов: ${certs.length}`, 'dim');
   }catch(e){
-    $('certs').innerHTML = '<span class="dim">Ошибка чтения хранилища</span>';
+    certStatus = 'error'; updateCertTrigger();
     log('хранилище: '+errText(e), 'err');
   }
 }
@@ -238,20 +288,66 @@ async function loadCerts(){
 function cn(dn){ const m=/CN=([^,]+)/.exec(dn); return m?m[1].trim():dn; }
 function fmtDate(d){ return d.toLocaleDateString('ru-RU'); }
 
+// ---------- выпадающий выбор сертификата ----------
+function updateCertTrigger(){
+  const el = $('certTriggerText'), trigger = $('certTrigger');
+  if (certStatus==='loading'){ el.textContent='Открываю хранилище…'; trigger.disabled=true; return; }
+  if (certStatus==='error'){ el.textContent='Ошибка чтения хранилища'; trigger.disabled=true; return; }
+  if (!certs.length){ el.textContent='Нет валидных сертификатов в хранилище «Личное»'; trigger.disabled=true; return; }
+  trigger.disabled=false;
+  if (selected===null){ el.innerHTML=`Выберите сертификат <span class="meta">(${certs.length})</span>`; return; }
+  const c=certs[selected];
+  el.innerHTML=`<span class="who">${cn(c.subject)}</span><span class="meta">до ${fmtDate(c.to)}</span>`;
+}
+
 function renderCerts(){
-  if (!certs.length){ $('certs').innerHTML='<span class="dim">Нет валidных сертификатов в хранилище «Личное».</span>'; return; }
-  $('certs').innerHTML='';
-  certs.forEach((c,i)=>{
+  const list=$('certs');
+  list.innerHTML='';
+  if (!certs.length){
+    list.innerHTML='<div class="certEmpty">Нет валидных сертификатов в хранилище «Личное».</div>';
+    return;
+  }
+  const q=certFilter.trim().toLowerCase();
+  const filtered=certs.map((c,i)=>({c,i}))
+    .filter(({c})=>!q || cn(c.subject).toLowerCase().includes(q) || c.serialHex.toLowerCase().includes(q));
+  if (!filtered.length){
+    list.innerHTML='<div class="certEmpty">Ничего не найдено</div>';
+    return;
+  }
+  filtered.forEach(({c,i})=>{
     const div=document.createElement('div');
-    div.className='cert';
+    div.className='cert'+(selected===i?' on':'');
     div.innerHTML=`<div class="who">${cn(c.subject)}</div>
       <div class="meta">№ ${c.serialHex} · до ${fmtDate(c.to)} · ${HASH_BY_OID[c.oid]?'ГОСТ ok':'алгоритм не поддержан'}</div>`;
-    div.onclick=()=>{ selected=i; renderCerts(); markSel(i,div); updateSealPreview(); refreshSignBtn(); };
-    if (selected===i) div.classList.add('on');
-    $('certs').appendChild(div);
+    div.onclick=()=>{
+      selected=i;
+      updateCertTrigger();
+      updateSealPreview();
+      refreshSignBtn();
+      closeCertPanel();
+    };
+    list.appendChild(div);
   });
 }
-function markSel(i){ [...$('certs').children].forEach((el,k)=>el.classList.toggle('on',k===i)); }
+
+function openCertPanel(){
+  if ($('certTrigger').disabled) return;
+  $('certPanel').hidden=false;
+  $('certTrigger').classList.add('open');
+  $('certSearch').value=''; certFilter='';
+  renderCerts();
+  $('certSearch').focus();
+}
+function closeCertPanel(){
+  $('certPanel').hidden=true;
+  $('certTrigger').classList.remove('open');
+}
+$('certTrigger').addEventListener('click', ()=>{
+  $('certPanel').hidden ? openCertPanel() : closeCertPanel();
+});
+$('certSearch').addEventListener('input', e=>{ certFilter=e.target.value; renderCerts(); });
+document.addEventListener('click', e=>{ if (!$('certSelect').contains(e.target)) closeCertPanel(); });
+document.addEventListener('keydown', e=>{ if (e.key==='Escape') closeCertPanel(); });
 
 // ---------- предпросмотр оттиска ----------
 function sealLines(c){
