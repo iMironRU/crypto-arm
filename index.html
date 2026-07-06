@@ -910,10 +910,10 @@ $('sign').onclick=sign;
 $('reload').onclick=loadCerts;
 ['page','mr','mb','reason'].forEach(id=>$(id).addEventListener('input',()=>{}));
 
-// ---------- версия страницы (номер коммита gh-pages) ----------
+// ---------- версия страницы (номер коммита main — Pages раздаёт прямо из него) ----------
 async function loadBuildInfo(){
   try{
-    const res = await fetch('https://api.github.com/repos/iMironRU/crypto-arm/commits/gh-pages', {cache:'no-store'});
+    const res = await fetch('https://api.github.com/repos/iMironRU/crypto-arm/commits/main', {cache:'no-store'});
     if (!res.ok) throw new Error('GitHub API '+res.status);
     const data = await res.json();
     const sha = data.sha.slice(0,7);
