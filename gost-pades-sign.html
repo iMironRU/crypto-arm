@@ -99,6 +99,10 @@
   .banner{padding:12px 15px;font-size:13px;margin-bottom:16px;border:1px solid;border-radius:var(--radius-sm)}
   .banner.err{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
   .banner.ok{background:var(--seal-soft);border-color:var(--seal);color:var(--seal-dark)}
+  .banner a.pluginLink{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;
+    border:1px solid var(--warn);border-radius:var(--radius-sm);color:var(--warn);
+    text-decoration:none;font-size:12.5px;font-weight:700;background:#fff;transition:background .15s}
+  .banner a.pluginLink:hover{background:var(--warn-soft)}
   .flex{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 </style>
 </head>
@@ -224,25 +228,64 @@ async function ensurePlugin(){
   // 1) ждём появления объекта (внешний src может грузиться с задержкой)
   for (let i=0; i<60 && typeof window.cadesplugin==='undefined'; i++) await sleep(100);
   const cp = window.cadesplugin;
-  if (!cp) throw new Error('cadesplugin_api.js не загрузился — проверь путь/доступ к файлу');
+  if (!cp){
+    const e=new Error('cadesplugin_api.js не загрузился — проверь подключение к интернету и доступ к cryptopro.ru');
+    e.kind='script'; throw e;
+  }
   // 2) дожидаемся готовности плагина (promise-режим современных браузеров)
   if (typeof cp.then==='function'){
     try{ await cp; }
-    catch(e){ throw new Error('плагин не инициализировался: '+(e&&e.message||e)); }
+    catch(e2){
+      const e=new Error('плагин не инициализировался: '+(e2&&e2.message||e2));
+      e.kind='init'; throw e;
+    }
   }
   // 3) API поднимается после рукопожатия с расширением — ждём метод
   for (let i=0; i<60 && typeof window.cadesplugin.CreateObjectAsync!=='function'; i++) await sleep(100);
-  if (typeof window.cadesplugin.CreateObjectAsync!=='function')
-    throw new Error('API плагина не поднялся — проверь, что установлен CryptoPro Extension и сам плагин, и что вкладка перезагружена');
+  if (typeof window.cadesplugin.CreateObjectAsync!=='function'){
+    const e=new Error('API плагина не поднялся — проверь, что установлены CryptoPro CSP, ЭЦП Browser plug-in и расширение браузера, и что вкладка перезагружена');
+    e.kind='handshake'; throw e;
+  }
   pluginReady = true;
+}
+
+// ---------- баннер "плагин недоступен" с инструкцией по установке ----------
+const PLUGIN_LINKS = {
+  csp:  'https://www.cryptopro.ru/products/csp',
+  plug: 'https://www.cryptopro.ru/products/cades/plugin',
+};
+function pluginBanner(e){
+  const reason = {
+    script:    'Не удалось загрузить cadesplugin_api.js. Проверь подключение к интернету — файл подгружается с сайта КриптоПро.',
+    init:      'КриптоПро ЭЦП Browser plug-in не отвечает. Обычно значит, что не установлен CryptoPro CSP или сам плагин.',
+    handshake: 'Плагин не поднял API в браузере. Обычно значит, что не установлено (или отключено) расширение-мост для браузера, либо страницу нужно перезагрузить после установки.',
+  }[e&&e.kind] || errText(e);
+  return `<div class="banner err">
+    <div style="margin-bottom:8px"><b>Плагин КриптоПро недоступен.</b> ${reason}</div>
+    <div class="note" style="margin:0 0 10px">Для работы нужны все три компонента — поставь по порядку и перезагрузи страницу:</div>
+    <div class="flex" style="margin-bottom:10px">
+      <a class="pluginLink" href="${PLUGIN_LINKS.csp}" target="_blank" rel="noopener">1 · CryptoPro CSP</a>
+      <a class="pluginLink" href="${PLUGIN_LINKS.plug}" target="_blank" rel="noopener">2 · ЭЦП Browser plug-in + расширение браузера</a>
+    </div>
+    <button class="ghost" id="pluginRetry" style="padding:6px 14px;font-size:12.5px">Проверить ещё раз</button>
+  </div>`;
 }
 async function initPlugin(){
   try{
     await ensurePlugin();
+    $('env').innerHTML='';
     log('плагин загружен', 'ok');
     return true;
   }catch(e){
-    $('env').innerHTML = '<div class="banner err">'+errText(e)+'</div>';
+    $('env').innerHTML = pluginBanner(e);
+    const btn = $('pluginRetry');
+    if (btn) btn.onclick = async ()=>{
+      btn.disabled=true; btn.textContent='Проверяю…';
+      pluginReady=false;
+      const ok = await initPlugin();
+      if (ok) await loadCerts();
+      refreshSignBtn();
+    };
     log(errText(e),'err');
     return false;
   }
