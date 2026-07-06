@@ -92,6 +92,16 @@
   .certPanelFooter{display:flex;align-items:center;justify-content:space-between;gap:10px;
     padding:9px 14px;border-top:1px solid var(--line);background:var(--field)}
 
+  .docList{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+  .docItem{display:flex;align-items:center;gap:10px;border:1px solid var(--line);background:var(--field);
+    border-radius:var(--radius-sm);padding:9px 12px}
+  .docItem .docInfo{flex:1;min-width:0}
+  .docItem .who{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .docItem .meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:2px}
+  .docRemove{flex:none;width:24px;height:24px;padding:0;border-radius:50%;font-size:13px;line-height:1;
+    background:transparent;border:1px solid var(--line);color:var(--muted)}
+  .docRemove:hover{border-color:var(--warn);color:var(--warn);background:var(--warn-soft)}
+
   .log{font-family:var(--mono);font-size:12.5px;background:#181917;color:#d7d5cc;padding:14px;
     white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;border-radius:0 0 var(--radius) var(--radius)}
   .log .ok{color:#6bd39a}.log .err{color:#f0968a}.log .dim{color:#8b8f86}
@@ -140,12 +150,13 @@
   <div id="env"></div>
 
   <section>
-    <div class="head"><span>1 · Документ</span><span id="pdfState">не выбран</span></div>
+    <div class="head"><span>1 · Документ</span><span id="docCount">не выбран</span></div>
     <div class="body">
       <label class="file" id="drop">
-        <input type="file" id="pdf" accept="application/pdf">
-        Выбери PDF или перетащи сюда
+        <input type="file" id="pdf" accept="application/pdf" multiple>
+        Выбери до 5 PDF или перетащи сюда
       </label>
+      <div id="docList" class="docList"></div>
     </div>
   </section>
 
@@ -249,9 +260,8 @@ const log = (m, cls='') => {
   el.scrollTop = el.scrollHeight;
 };
 
-let pdfBytes = null;         // Uint8Array текущего документа (после подписи заменяется на подписанный)
-let signCount = 0;           // сколько подписей уже стоит в текущем pdfBytes — для чейна подписей и разноса штампов
-let originalBaseName = 'document'; // имя загруженного файла без расширения — для имени результата
+const MAX_DOCS = 5;          // сколько файлов можно подписать за один заход
+let docs = [];                // [{name, baseName, bytes, signCount}] — каждый файл со своим счётчиком подписей
 let certs = [];              // [{cert, subject, serialHex, from, to, oid}]
 let selected = new Set();    // индексы выбранных сертификатов — подписываем каждым по очереди
 
@@ -474,9 +484,11 @@ function sealCardHtml(c, tag, dashed){
 function updateSealPreview(){
   if (selected.size===0){ $('sealPrev').innerHTML = sealCardHtml(SAMPLE_CERT,'образец',true); return; }
   const ordered = [...selected].sort((a,b)=>a-b);
-  $('sealPrev').innerHTML = ordered
+  const cards = ordered
     .map((i,n)=>sealCardHtml(certs[i], ordered.length>1?`подпись ${n+1} из ${ordered.length}`:null, false))
     .join('<div style="height:8px"></div>');
+  const note = docs.length>1 ? `<div class="note" style="margin:0 0 8px">Применится к каждому из ${docs.length} загруженных файлов.</div>` : '';
+  $('sealPrev').innerHTML = note+cards;
 }
 
 // ---------- байтовые утилиты ----------
@@ -538,7 +550,7 @@ function serializeIndirect(ref, obj){
   return concatU8([head, body, tail]);
 }
 
-async function buildIncremental(src, c){
+async function buildIncremental(src, c, stampIndex){
   if (findBytes(src,'/Encrypt')>=0)
     throw new Error('документ похоже зашифрован/защищён паролем — такие PDF не поддерживаются');
 
@@ -559,11 +571,11 @@ async function buildIncremental(src, c){
   const w=230, h=80, gap=10;
   const mr=parseFloat($('mr').value)||40, mb=parseFloat($('mb').value)||40;
   // при нескольких подписях подряд каждый новый штамп рисуется на своём месте
-  // (иначе они лягут друг на друга) — используем signCount (сколько подписей
-  // уже стоит на документе прямо сейчас) как индекс в стопке; когда столбец
-  // упирается в верх страницы, начинаем новый столбец левее
+  // (иначе они лягут друг на друга) — stampIndex — сколько подписей уже стоит
+  // на ЭТОМ документе прямо сейчас, используем как индекс в стопке; когда
+  // столбец упирается в верх страницы, начинаем новый столбец левее
   const perColumn = Math.max(1, Math.floor((height-mb)/(h+gap)));
-  const col = Math.floor(signCount/perColumn), row = signCount%perColumn;
+  const col = Math.floor(stampIndex/perColumn), row = stampIndex%perColumn;
   const x = width - w - mr - col*(w+gap), y = mb + row*(h+gap);
   const signedAt = new Date();
 
@@ -679,11 +691,11 @@ function pdfDate(d){
 }
 
 // ---------- главный поток подписания ----------
-// подписывает pdfBytes ОДНИМ сертификатом (инкрементально) и встраивает контейнер;
+// подписывает srcBytes ОДНИМ сертификатом (инкрементально) и встраивает контейнер;
 // возвращает новый буфер документа — вызывающий код сам решает, что с ним делать
-async function signOnce(c){
+async function signOnce(c, srcBytes, stampIndex){
   log('готовлю инкрементальное обновление с placeholder…','dim');
-  const built = await buildIncremental(pdfBytes, c);
+  const built = await buildIncremental(srcBytes, c, stampIndex);
   const buf = new Uint8Array(built.bytes);
 
   // Ищем /ByteRange НАЧИНАЯ С известного смещения нашей новой подписи
@@ -736,18 +748,24 @@ async function signOnce(c){
   return buf;
 }
 
-function outputFilename(){
-  return signCount>1 ? `${originalBaseName}-sig${signCount}.pdf` : `${originalBaseName}-sig.pdf`;
+function outputFilename(d){
+  return d.signCount>1 ? `${d.baseName}-sig${d.signCount}.pdf` : `${d.baseName}-sig.pdf`;
+}
+function downloadBlob(blob, name){
+  const url=URL.createObjectURL(blob);
+  const a2=document.createElement('a');
+  a2.href=url; a2.download=name; a2.click();
+  URL.revokeObjectURL(url);
 }
 
-// подписывает документ ПО ОЧЕРЕДИ всеми отмеченными сертификатами и отдаёт
-// ОДИН итоговый файл — раньше на каждую подпись нужно было жать «Подписать»
-// заново и каждый раз скачивался отдельный файл, теперь достаточно отметить
-// нужные сертификаты и нажать один раз
+// подписывает КАЖДЫЙ загруженный файл ПО ОЧЕРЕДИ всеми отмеченными
+// сертификатами. Один файл на выходе — скачивается прямо PDF-ом; несколько —
+// собираются в один signed.zip, чтобы браузер не заблокировал кучу
+// параллельных скачиваний и не пришлось разбирать их по одному руками.
 async function sign(){
-  const list = [...selected].sort((a,b)=>a-b).map(i=>certs[i]);
-  if (!list.length) return;
-  for (const c of list){
+  const certList = [...selected].sort((a,b)=>a-b).map(i=>certs[i]);
+  if (!certList.length || !docs.length) return;
+  for (const c of certList){
     if (!HASH_BY_OID[c.oid]){
       log(`алгоритм сертификата не поддержан: ${cn(c.subject)}`,'err');
       $('env').innerHTML = `<div class="banner err">Сертификат «${cn(c.subject)}» использует неподдерживаемый алгоритм — уберите его из выбора.</div>`;
@@ -756,31 +774,37 @@ async function sign(){
   }
 
   $('sign').disabled=true;
-  let doneCount=0, lastError=null;
-  for (let idx=0; idx<list.length; idx++){
-    const c=list[idx];
-    try{
-      log(`— подпись ${idx+1}/${list.length}: ${cn(c.subject)} —`,'dim');
-      pdfBytes = await signOnce(c);
-      signCount++;
-      doneCount++;
-      log(`✓ подпись ${idx+1}/${list.length} готова`,'ok');
-    }catch(e){
-      lastError=e;
-      log(`✗ подпись ${idx+1}/${list.length} не удалась: ${errText(e)}`,'err');
-      break;
+  const total = docs.length*certList.length;
+  let done=0, lastError=null, failedDocName=null;
+
+  outer:
+  for (const d of docs){
+    for (let ci=0; ci<certList.length; ci++){
+      const c=certList[ci];
+      try{
+        log(`— файл «${d.name}», подпись ${ci+1}/${certList.length} (${cn(c.subject)}) —`,'dim');
+        d.bytes = await signOnce(c, d.bytes, d.signCount);
+        d.signCount++;
+        done++;
+        log(`✓ готово (${done}/${total})`,'ok');
+      }catch(e){
+        lastError=e; failedDocName=d.name;
+        log(`✗ ошибка на файле «${d.name}»: ${errText(e)}`,'err');
+        break outer;
+      }
     }
   }
+  renderDocList();
 
-  let fname=null;
-  if (doneCount>0){
-    fname = outputFilename();
-    const blob=new Blob([pdfBytes],{type:'application/pdf'});
-    const url=URL.createObjectURL(blob);
-    const a2=document.createElement('a');
-    a2.href=url; a2.download=fname; a2.click();
-    URL.revokeObjectURL(url);
-    $('pdfState').textContent = `${fname} · подписей: ${signCount}`;
+  const signedDocs = docs.filter(d=>d.signCount>0);
+  if (signedDocs.length===1){
+    downloadBlob(new Blob([signedDocs[0].bytes],{type:'application/pdf'}), outputFilename(signedDocs[0]));
+  } else if (signedDocs.length>1){
+    log('собираю zip из подписанных файлов…','dim');
+    const { default: JSZip } = await import('https://esm.sh/jszip@3.10.1');
+    const zip = new JSZip();
+    for (const d of signedDocs) zip.file(outputFilename(d), d.bytes);
+    downloadBlob(await zip.generateAsync({type:'blob'}), 'signed.zip');
   }
 
   // сбрасываем выбор — чтобы следующую подпись нельзя было случайно поставить
@@ -791,18 +815,18 @@ async function sign(){
 
   if (lastError){
     $('env').innerHTML = `<div class="banner err">
-      Подписано ${doneCount} из ${list.length}, дальше прервано ошибкой: ${errText(lastError)}.
-      ${doneCount>0?`Файл с уже поставленными подписями (${fname}) всё равно сохранён.`:''}
+      Подписано ${done} из ${total} операций, прервано на файле «${failedDocName}»: ${errText(lastError)}.
+      ${signedDocs.length?`Уже готовые файлы (${signedDocs.length}) всё равно сохранены${signedDocs.length>1?' в signed.zip':''}.`:''}
     </div>`;
   } else {
     $('env').innerHTML = `<div class="banner ok">
-      Готово. ${fname} сохранён (подписей на документе: ${signCount}).<br>
-      Чтобы добавить ещё подписи на этот же документ: отметь другие сертификаты
-      и снова нажми «Подписать» — файл в памяти уже обновлён, повторно загружать его не нужно.<br>
+      Готово. ${signedDocs.length>1?`Все ${signedDocs.length} файла сохранены одним архивом signed.zip.`:`${outputFilename(signedDocs[0])} сохранён.`}<br>
+      Чтобы добавить ещё подписи на эти же файлы: отметь сертификаты и снова нажми «Подписать» —
+      файлы в памяти уже обновлены, повторно загружать их не нужно.<br>
       Проверить результат можно любым верификатором PAdES (КриптоАРМ, Adobe, sign.kloud.one).
     </div>`;
   }
-  log(`итог: подписано ${doneCount}/${list.length}, всего подписей на документе: ${signCount}`, lastError?'err':'ok');
+  log(`итог: ${done}/${total} операций подписания выполнено`, lastError?'err':'ok');
   $('sign').disabled=false;
   refreshSignBtn();
 }
@@ -814,35 +838,62 @@ function errText(e){
   return String(e);
 }
 
-// ---------- ввод PDF ----------
-function loadPdfFile(file){
-  if(!file) return;
-  const r=new FileReader();
-  r.onload=()=>{
-    pdfBytes=new Uint8Array(r.result);
-    signCount=0;
-    originalBaseName = file.name.replace(/\.pdf$/i,'') || 'document';
-    $('pdfState').textContent=file.name;
-    refreshSignBtn();
-    log('PDF загружен: '+file.name,'dim');
-  };
-  r.readAsArrayBuffer(file);
+// ---------- ввод PDF (можно сразу несколько, до MAX_DOCS) ----------
+function renderDocList(){
+  $('docCount').textContent = docs.length ? `${docs.length}/${MAX_DOCS} файл(ов)` : 'не выбран';
+  const list = $('docList');
+  if (!docs.length){ list.innerHTML=''; return; }
+  list.innerHTML = docs.map((d,i)=>`
+    <div class="docItem">
+      <div class="docInfo">
+        <div class="who">${d.name}</div>
+        <div class="meta">подписей: ${d.signCount}</div>
+      </div>
+      <button type="button" class="docRemove" data-i="${i}" title="Убрать из списка">✕</button>
+    </div>`).join('');
+  list.querySelectorAll('.docRemove').forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); docs.splice(+btn.dataset.i,1); renderDocList(); refreshSignBtn(); updateSealPreview(); };
+  });
 }
-$('pdf').onchange=e=>loadPdfFile(e.target.files[0]);
+
+function loadPdfFiles(fileList){
+  const files=[...fileList].filter(f=>f);
+  if (!files.length) return;
+  const room = MAX_DOCS-docs.length;
+  if (room<=0){ log(`лимит ${MAX_DOCS} файлов достигнут — убери что-то из списка, чтобы добавить новый`,'err'); return; }
+  const toLoad = files.slice(0,room);
+  if (files.length>toLoad.length) log(`выбрано ${files.length}, загружено только ${toLoad.length} — лимит ${MAX_DOCS} файлов за раз`,'err');
+  toLoad.forEach(file=>{
+    const r=new FileReader();
+    r.onload=()=>{
+      docs.push({ name:file.name, baseName:file.name.replace(/\.pdf$/i,'')||'document', bytes:new Uint8Array(r.result), signCount:0 });
+      renderDocList();
+      refreshSignBtn();
+      updateSealPreview();
+      log('PDF загружен: '+file.name,'dim');
+    };
+    r.readAsArrayBuffer(file);
+  });
+}
+$('pdf').onchange=e=>{ loadPdfFiles(e.target.files); e.target.value=''; };
 const drop=$('drop');
 ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor='var(--seal)';}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor='';}));
-drop.addEventListener('drop',e=>loadPdfFile(e.dataTransfer.files[0]));
+drop.addEventListener('drop',e=>loadPdfFiles(e.dataTransfer.files));
 
 function refreshSignBtn(){
-  const ok = pdfBytes && selected.size>0;
+  const ok = docs.length>0 && selected.size>0;
   $('sign').disabled=!ok;
-  const label = selected.size>1 ? `Подписать (${selected.size} шт.) и встроить в PDF`
-    : signCount>0 ? 'Добавить ещё одну подпись' : 'Подписать и встроить в PDF';
+  const totalSigs = docs.reduce((n,d)=>n+d.signCount,0);
+  const label = (docs.length>1 && selected.size>1) ? `Подписать ${docs.length} файла × ${selected.size} серт.`
+    : docs.length>1 ? `Подписать ${docs.length} файла`
+    : selected.size>1 ? `Подписать (${selected.size} шт.) и встроить в PDF`
+    : totalSigs>0 ? 'Добавить ещё одну подпись' : 'Подписать и встроить в PDF';
   $('sign').textContent = label;
   $('signHint').textContent = ok ? ''
-    : (signCount>0 ? `документ уже подписан (${signCount}) — отметь ещё сертификат(ы), чтобы подписать снова`
-                   : 'нужен PDF и хотя бы один выбранный сертификат');
+    : (docs.length===0 ? 'нужен хотя бы один PDF'
+      : totalSigs>0 ? `документ уже подписан — отметь ещё сертификат(ы), чтобы подписать снова`
+                    : 'нужен хотя бы один выбранный сертификат');
 }
 $('sign').onclick=sign;
 $('reload').onclick=loadCerts;
