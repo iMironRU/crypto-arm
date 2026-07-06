@@ -126,12 +126,17 @@
   .banner{padding:12px 15px;font-size:13px;margin-bottom:16px;border:1px solid;border-radius:var(--radius-sm)}
   .banner.err{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
   .banner.ok{background:var(--seal-soft);border-color:var(--seal);color:var(--seal-dark)}
+  .banner a{color:inherit;font-weight:700;text-decoration:underline}
   .banner a.pluginLink{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;
     border:1px solid var(--warn);border-radius:var(--radius-sm);color:var(--warn);
     text-decoration:none;font-size:12.5px;font-weight:700;background:#fff;transition:background .15s}
   .banner a.pluginLink:hover{background:var(--warn-soft)}
   .flex{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-  .buildInfo{text-align:center;font-size:11.5px;color:var(--muted);margin-top:18px;font-family:var(--mono)}
+  .footerLinks{text-align:center;font-size:12.5px;color:var(--muted);margin-top:26px;display:flex;
+    justify-content:center;align-items:center;gap:8px;flex-wrap:wrap}
+  .footerLinks a{color:var(--seal-dark);text-decoration:none;border-bottom:1px dotted var(--seal)}
+  .footerLinks a:hover{color:var(--seal);border-color:var(--seal)}
+  .buildInfo{text-align:center;font-size:11.5px;color:var(--muted);margin-top:8px;font-family:var(--mono)}
   .buildInfo a{color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--line)}
   .buildInfo a:hover{color:var(--ink);border-color:var(--muted)}
   .updateBanner{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:50;
@@ -229,6 +234,11 @@
     <div class="body" style="padding:0"><div class="log" id="log">готов к работе…\n</div></div>
   </section>
 
+  <footer class="footerLinks">
+    <a href="https://saas.cryptopro.ru/verifycpca/" target="_blank" rel="noopener">Проверить подпись онлайн (КриптоПро)</a>
+    <span aria-hidden="true">·</span>
+    <a href="https://github.com/iMironRU/crypto-arm" target="_blank" rel="noopener">Исходники на GitHub</a>
+  </footer>
   <footer id="buildInfo" class="buildInfo">версия: —</footer>
 </div>
 
@@ -823,7 +833,8 @@ async function sign(){
       Готово. ${signedDocs.length>1?`Все ${signedDocs.length} файла сохранены одним архивом signed.zip.`:`${outputFilename(signedDocs[0])} сохранён.`}<br>
       Чтобы добавить ещё подписи на эти же файлы: отметь сертификаты и снова нажми «Подписать» —
       файлы в памяти уже обновлены, повторно загружать их не нужно.<br>
-      Проверить результат можно любым верификатором PAdES (КриптоАРМ, Adobe, sign.kloud.one).
+      Проверить результат: <a href="https://saas.cryptopro.ru/verifycpca/" target="_blank" rel="noopener">сервис проверки подписей КриптоПро</a>,
+      КриптоАРМ, Adobe или sign.kloud.one.
     </div>`;
   }
   log(`итог: ${done}/${total} операций подписания выполнено`, lastError?'err':'ok');
