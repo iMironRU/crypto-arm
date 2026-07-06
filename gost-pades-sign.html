@@ -542,6 +542,12 @@ async function buildIncremental(src, c){
   page.drawText('ЭЛЕКТРОННОЙ ПОДПИСЬЮ',{x:x+9,y:y+h-27,size:9,font:fontBold,color:rgb(0.12,0.36,0.24)});
   sealLines(c,signedAt).forEach((t,i)=>page.drawText(t,{x:x+9,y:y+h-40-i*10,size:7,font:font,color:rgb(0.23,0.36,0.29)}));
 
+  // embedFont()/drawText() лишь ПЛАНИРУЮТ встраивание шрифта — реальный субсеттинг
+  // (glyf-таблица, CIDToGIDMap, ToUnicode) pdf-lib выполняет только внутри save().
+  // Без этого шага в файл попадает недособранный шрифт, и текст на штампе
+  // рендерится кракозябрами. flush() делает эту финализацию без записи байт.
+  await doc.flush();
+
   // ---- signature dict + widget ----
   const byteRange = PDFArray.withContext(ctx);
   byteRange.push(PDFNumber.of(0));
@@ -579,6 +585,7 @@ async function buildIncremental(src, c){
 
   trackMod(page.ref);
   trackMod(ctx.trailerInfo.Root);
+  trackMod(ctx.trailerInfo.Info); // flush() выше мог обновить ModDate в уже существующем /Info
   trackMod(page.node.get(PDFName.of('Resources'))); // на случай если это отдельный объект
 
   let annots = resolveTracked(page.node, 'Annots');
