@@ -204,7 +204,7 @@
 </div>
 
 <script type="module">
-import { PDFDocument, PDFName, PDFNumber, PDFString, PDFHexString, PDFArray, rgb }
+import { PDFDocument, PDFName, PDFNumber, PDFString, PDFHexString, PDFArray, PDFRef, PDFDict, rgb }
   from 'https://esm.sh/pdf-lib@1.17.1';
 import fontkit from 'https://esm.sh/@pdf-lib/fontkit@1.1.1';
 
@@ -231,7 +231,8 @@ const log = (m, cls='') => {
   el.scrollTop = el.scrollHeight;
 };
 
-let pdfBytes = null;         // Uint8Array исходного PDF
+let pdfBytes = null;         // Uint8Array текущего документа (после подписи заменяется на подписанный)
+let signCount = 0;           // сколько подписей уже стоит в текущем pdfBytes — для чейна подписей
 let certs = [];              // [{cert, subject, serialHex, from, to, oid}]
 let selected = null;
 
@@ -452,6 +453,31 @@ function findBytes(buf, str, from=0){
   }
   return -1;
 }
+function findLastBytes(buf, str){
+  let last=-1, from=0;
+  while(true){ const p=findBytes(buf,str,from); if(p<0) break; last=p; from=p+str.length; }
+  return last;
+}
+function asciiBytes(s){ const u=new Uint8Array(s.length); for(let i=0;i<s.length;i++) u[i]=s.charCodeAt(i); return u; }
+function concatU8(parts){
+  const total=parts.reduce((n,p)=>n+p.length,0);
+  const out=new Uint8Array(total);
+  let off=0; for(const p of parts){ out.set(p,off); off+=p.length; }
+  return out;
+}
+// смещение самого свежего "startxref" исходного файла — на него будет ссылаться
+// /Prev нашего инкрементального обновления, чтобы дописать подпись без изменения
+// уже существующих байт (в т.ч. предыдущих подписей, если файл уже подписан).
+function findLastStartXrefOffset(buf){
+  const pos=findLastBytes(buf,'startxref');
+  if(pos<0) throw new Error('в исходном PDF не найден startxref — файл повреждён или не PDF');
+  let i=pos+'startxref'.length;
+  while(i<buf.length && (buf[i]===0x0d||buf[i]===0x0a||buf[i]===0x20||buf[i]===0x09)) i++;
+  let numStr='';
+  while(i<buf.length && buf[i]>=0x30 && buf[i]<=0x39){ numStr+=String.fromCharCode(buf[i]); i++; }
+  if(!numStr) throw new Error('не удалось прочитать смещение startxref');
+  return parseInt(numStr,10);
+}
 function u8ToBase64(u8){
   let s='', CH=0x8000;
   for(let i=0;i<u8.length;i+=CH) s+=String.fromCharCode.apply(null,u8.subarray(i,i+CH));
@@ -463,9 +489,28 @@ function base64ToHex(b64){
   return h;
 }
 
-// ---------- сборка PDF с placeholder ----------
-async function buildWithPlaceholder(src, c){
+// ---------- инкрементальная подпись ----------
+// Вместо полного пересохранения (doc.save()) дописываем в конец файла ТОЛЬКО
+// новые/изменённые объекты + новый xref со /Prev на старый. Существующие байты
+// (в т.ч. уже стоящие подписи) не трогаются — поэтому можно подписывать документ
+// несколько раз подряд: вторая подпись просто добавляет ещё одну ревизию поверх
+// первой, обе остаются валидны (как несколько печатей на бумажном документе).
+function serializeIndirect(ref, obj){
+  const head = asciiBytes(`${ref.objectNumber} ${ref.generationNumber} obj\n`);
+  const body = new Uint8Array(obj.sizeInBytes());
+  obj.copyBytesInto(body, 0);
+  const tail = asciiBytes('\nendobj\n');
+  return concatU8([head, body, tail]);
+}
+
+async function buildIncremental(src, c){
+  if (findBytes(src,'/Encrypt')>=0)
+    throw new Error('документ похоже зашифрован/защищён паролем — такие PDF не поддерживаются');
+
   const doc = await PDFDocument.load(src);
+  const ctx = doc.context;
+  const preExistingMax = ctx.largestObjectNumber; // всё, что старше этого номера — точно новое
+
   const pages = doc.getPages();
   doc.registerFontkit(fontkit);
   const font = await doc.embedFont(b64ToU8(FONT_B64), {subset:true});
@@ -481,15 +526,14 @@ async function buildWithPlaceholder(src, c){
   const x = width - w - mr, y = mb;
   const signedAt = new Date();
 
-  // рисуем штамп в контент страницы
+  // рисуем штамп — pdf-lib добавляет его отдельным НОВЫМ потоком контента
+  // страницы, не переписывая существующее содержимое страницы
   page.drawRectangle({x,y,width:w,height:h,borderColor:rgb(0.12,0.36,0.24),borderWidth:1.4,color:rgb(1,1,1)});
   page.drawText('ДОКУМЕНТ ПОДПИСАН',{x:x+9,y:y+h-16,size:9,font:fontBold,color:rgb(0.12,0.36,0.24)});
   page.drawText('ЭЛЕКТРОННОЙ ПОДПИСЬЮ',{x:x+9,y:y+h-27,size:9,font:fontBold,color:rgb(0.12,0.36,0.24)});
   sealLines(c,signedAt).forEach((t,i)=>page.drawText(t,{x:x+9,y:y+h-40-i*10,size:7,font:font,color:rgb(0.23,0.36,0.29)}));
 
-  // ---- low-level: signature dict + field + widget ----
-  const ctx = doc.context;
-
+  // ---- signature dict + widget ----
   const byteRange = PDFArray.withContext(ctx);
   byteRange.push(PDFNumber.of(0));
   byteRange.push(PDFName.of('**********'));   // плейсхолдеры, перезапишем в байтах
@@ -508,20 +552,76 @@ async function buildWithPlaceholder(src, c){
 
   const widget = ctx.obj({
     Type:'Annot', Subtype:'Widget', FT:'Sig',
-    Rect:[x,y,x+w,y+h], V:sigRef, T:PDFString.of('Signature1'),
+    Rect:[x,y,x+w,y+h], V:sigRef, T:PDFString.of('Signature'+(preExistingMax+1)),
     F:4, P:page.ref,
   });
   const widgetRef = ctx.register(widget);
 
-  let annots = page.node.get(PDFName.of('Annots'));
-  if(!annots){ annots = ctx.obj([]); page.node.set(PDFName.of('Annots'), annots); }
+  // ---- какие уже существующие объекты мы модифицируем на этом шаге ----
+  // (их придётся полностью переписать новой ревизией — новые же объекты
+  // попадут в список автоматически по номеру, см. ниже)
+  const modified = new Map();
+  const trackMod = ref => { if (ref instanceof PDFRef && ref.objectNumber<=preExistingMax) modified.set(ref.objectNumber, ref); };
+  const resolveTracked = (dict, key) => {
+    const raw = dict.get(PDFName.of(key));
+    if (raw instanceof PDFRef){ trackMod(raw); return ctx.lookup(raw); }
+    return raw;
+  };
+
+  trackMod(page.ref);
+  trackMod(ctx.trailerInfo.Root);
+  trackMod(page.node.get(PDFName.of('Resources'))); // на случай если это отдельный объект
+
+  let annots = resolveTracked(page.node, 'Annots');
+  if (!annots){ annots = ctx.obj([]); page.node.set(PDFName.of('Annots'), annots); }
   annots.push(widgetRef);
 
-  const acro = ctx.obj({ SigFlags:3, Fields:[widgetRef] });
-  doc.catalog.set(PDFName.of('AcroForm'), ctx.register(acro));
+  // AcroForm переиспользуем, если уже есть — иначе вторая подпись стёрла бы поле первой
+  let acroRaw = doc.catalog.get(PDFName.of('AcroForm'));
+  let acroDict;
+  if (acroRaw instanceof PDFRef){ trackMod(acroRaw); acroDict = ctx.lookup(acroRaw); }
+  else if (acroRaw){ acroDict = acroRaw; }
+  else { acroDict = ctx.obj({}); doc.catalog.set(PDFName.of('AcroForm'), ctx.register(acroDict)); }
+  acroDict.set(PDFName.of('SigFlags'), PDFNumber.of(3));
 
-  // useObjectStreams:false — иначе Contents может уехать в сжатый поток и ByteRange сломается
-  return await doc.save({ useObjectStreams:false });
+  let fields = resolveTracked(acroDict, 'Fields');
+  if (!fields){ fields = ctx.obj([]); acroDict.set(PDFName.of('Fields'), fields); }
+  fields.push(widgetRef);
+
+  // ---- какие объекты нужно дописать в эту ревизию: новые + модифицированные ----
+  const toWrite = [];
+  for (const [ref,obj] of ctx.enumerateIndirectObjects()){
+    if (ref.objectNumber>preExistingMax || modified.has(ref.objectNumber)) toWrite.push({ref,obj});
+  }
+  toWrite.sort((a,b)=>a.ref.objectNumber-b.ref.objectNumber);
+
+  // ---- дописываем объекты, считаем их смещения в итоговом файле ----
+  const objOffsets = new Map();
+  const appended = [];
+  let cursor = src.length;
+  for (const {ref,obj} of toWrite){
+    const bytes = serializeIndirect(ref,obj);
+    objOffsets.set(ref.objectNumber, cursor);
+    appended.push(bytes);
+    cursor += bytes.length;
+  }
+
+  // ---- новый xref (classic table) + trailer со /Prev на старую ревизию ----
+  const xrefOffset = cursor;
+  let xref = 'xref\n';
+  for (const {ref} of toWrite){
+    const off = objOffsets.get(ref.objectNumber);
+    xref += `${ref.objectNumber} 1\n`;
+    xref += `${String(off).padStart(10,'0')} ${String(ref.generationNumber).padStart(5,'0')} n \n`;
+  }
+  const size = ctx.largestObjectNumber+1;
+  const root = ctx.trailerInfo.Root;
+  const prevOffset = findLastStartXrefOffset(src);
+  xref += `trailer\n<< /Size ${size} /Root ${root.objectNumber} ${root.generationNumber} R /Prev ${prevOffset} >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  appended.push(asciiBytes(xref));
+
+  const bytes = concatU8([src, ...appended]);
+  return { bytes, sigOffset: objOffsets.get(sigRef.objectNumber) };
 }
 
 function pdfDate(d){
@@ -537,16 +637,15 @@ async function sign(){
     const c=certs[selected];
     if(!HASH_BY_OID[c.oid]){ log('алгоритм сертификата не поддержан','err'); $('sign').disabled=false; return; }
 
-    log('готовлю PDF с placeholder…','dim');
-    let buf = await buildWithPlaceholder(pdfBytes, c);
-    buf = new Uint8Array(buf);
+    log('готовлю инкрементальное обновление с placeholder…','dim');
+    const built = await buildIncremental(pdfBytes, c);
+    const buf = new Uint8Array(built.bytes);
 
-    // /ByteRange встречается в файле только в нашем словаре подписи —
-    // ищем его первым и от его позиции ищем "свой" /Contents.
-    // Если искать /Contents с начала файла, можно попасть на /Contents
-    // страницы (ссылку на content stream) и записать подпись в чужое место —
-    // из-за этого файл потом не открывается просмотровщиками.
-    const brPos=findBytes(buf,'/ByteRange');
+    // Ищем /ByteRange НАЧИНАЯ С известного смещения нашей новой подписи
+    // (built.sigOffset), а не с начала файла: если документ уже подписан
+    // раньше, в файле есть чужой /ByteRange и /Contents, и поиск с нуля
+    // нашёл бы их вместо нашей новой подписи.
+    const brPos=findBytes(buf,'/ByteRange',built.sigOffset);
     if(brPos<0) throw new Error('не нашёл placeholder /ByteRange');
     const cPos = findBytes(buf,'/Contents',brPos);
     const open = findBytes(buf,'<',cPos);
@@ -590,14 +689,21 @@ async function sign(){
     for(let i=0;i<hexPadded.length;i++) buf[open+1+i]=hexPadded.charCodeAt(i);
     log('контейнер встроен, '+(hex.length/2|0)+' байт','ok');
 
-    // отдаём
+    // отдаём файл; сам подписанный буфер оставляем "текущим документом" —
+    // это позволяет сразу подписать его ещё раз другим сертификатом (см. вопрос
+    // "как подписать несколько раз" — каждый sign() лишь дописывает новую
+    // ревизию, поэтому чейн подписей работает без повторной загрузки файла)
+    signCount++;
+    pdfBytes = buf;
+    const fname = signCount===1 ? 'signed.pdf' : `signed-x${signCount}.pdf`;
     const blob=new Blob([buf],{type:'application/pdf'});
     const url=URL.createObjectURL(blob);
     const a2=document.createElement('a');
-    a2.href=url; a2.download='signed.pdf'; a2.click();
+    a2.href=url; a2.download=fname; a2.click();
     URL.revokeObjectURL(url);
-    $('env').innerHTML='<div class="banner ok">Готово. signed.pdf сохранён. Проверь подпись любым верификатором PAdES (КриптоАРМ, Adobe, sign.kloud.one).</div>';
-    log('✓ документ подписан','ok');
+    $('pdfState').textContent = `${fname} · подписей: ${signCount}`;
+    $('env').innerHTML=`<div class="banner ok">Готово. ${fname} сохранён (подписей на документе: ${signCount}). Хочешь добавить ещё одну подпись — выбери другой сертификат и нажми «Подписать» снова, документ в памяти уже обновлён. Проверить можно любым верификатором PAdES (КриптоАРМ, Adobe, sign.kloud.one).</div>`;
+    log(`✓ документ подписан (подписей: ${signCount})`,'ok');
   }catch(e){
     log('ошибка: '+errText(e),'err');
     $('env').innerHTML='<div class="banner err">Не удалось подписать: '+errText(e)+'</div>';
@@ -617,7 +723,7 @@ function errText(e){
 function loadPdfFile(file){
   if(!file) return;
   const r=new FileReader();
-  r.onload=()=>{ pdfBytes=new Uint8Array(r.result); $('pdfState').textContent=file.name; refreshSignBtn(); log('PDF загружен: '+file.name,'dim'); };
+  r.onload=()=>{ pdfBytes=new Uint8Array(r.result); signCount=0; $('pdfState').textContent=file.name; refreshSignBtn(); log('PDF загружен: '+file.name,'dim'); };
   r.readAsArrayBuffer(file);
 }
 $('pdf').onchange=e=>loadPdfFile(e.target.files[0]);
