@@ -92,10 +92,23 @@
     white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;border-radius:0 0 var(--radius) var(--radius)}
   .log .ok{color:#6bd39a}.log .err{color:#f0968a}.log .dim{color:#8b8f86}
   .note{font-size:12.5px;color:var(--muted);margin-top:8px}
-  .seal-preview{border:1.6px solid var(--seal);color:var(--seal);padding:10px 12px;font-size:11px;
+  .seal-preview{position:relative;border:1.6px solid var(--seal);color:var(--seal);padding:10px 12px;font-size:11px;
     line-height:1.35;max-width:300px;background:var(--surface);border-radius:var(--radius-sm)}
   .seal-preview .t{font-weight:700;font-size:11.5px;margin-bottom:3px}
   .seal-preview .m{font-family:var(--mono);font-size:10px;color:#3a5c49}
+  .seal-preview.sample{border-style:dashed;opacity:.75}
+  .seal-preview .sampleTag{position:absolute;top:-9px;right:10px;background:var(--surface);
+    padding:0 6px;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700}
+
+  details.adv{border-top:1px solid var(--line);margin-top:14px;padding-top:12px}
+  details.adv summary{cursor:pointer;font-size:12.5px;font-weight:600;color:var(--muted);
+    list-style:none;display:flex;align-items:center;gap:7px;user-select:none}
+  details.adv summary::-webkit-details-marker{display:none}
+  details.adv summary::before{content:'';width:0;height:0;flex:none;
+    border-left:5px solid var(--muted);border-top:4px solid transparent;border-bottom:4px solid transparent;
+    transition:transform .15s}
+  details.adv[open] summary::before{transform:rotate(90deg)}
+  details.adv .advBody{padding-top:14px}
   .banner{padding:12px 15px;font-size:13px;margin-bottom:16px;border:1px solid;border-radius:var(--radius-sm)}
   .banner.err{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
   .banner.ok{background:var(--seal-soft);border-color:var(--seal);color:var(--seal-dark)}
@@ -146,26 +159,31 @@
   <section>
     <div class="head"><span>3 · Оттиск</span></div>
     <div class="body">
-      <div class="field">
-        <label>Причина подписания (/Reason)</label>
-        <input type="text" id="reason" value="Подписание документа">
-      </div>
-      <div class="row3">
-        <div class="field">
-          <label>Страница (0 — последняя)</label>
-          <input type="number" id="page" value="0" min="0">
+      <div class="note" style="margin-top:0">Отметка формируется по ГОСТ Р 7.0.97: заголовок, номер сертификата, владелец, срок действия, дата подписания.</div>
+      <div id="sealPrev" style="margin:12px 0"></div>
+      <details class="adv">
+        <summary>Расширенные настройки</summary>
+        <div class="advBody">
+          <div class="field">
+            <label>Причина подписания (/Reason)</label>
+            <input type="text" id="reason" value="Подписание документа">
+          </div>
+          <div class="row3">
+            <div class="field">
+              <label>Страница (0 — последняя)</label>
+              <input type="number" id="page" value="0" min="0">
+            </div>
+            <div class="field">
+              <label>Отступ справа, пт</label>
+              <input type="number" id="mr" value="40" min="0">
+            </div>
+            <div class="field">
+              <label>Отступ снизу, пт</label>
+              <input type="number" id="mb" value="40" min="0">
+            </div>
+          </div>
         </div>
-        <div class="field">
-          <label>Отступ справа, пт</label>
-          <input type="number" id="mr" value="40" min="0">
-        </div>
-        <div class="field">
-          <label>Отступ снизу, пт</label>
-          <input type="number" id="mb" value="40" min="0">
-        </div>
-      </div>
-      <div class="note">Отметка формируется по ГОСТ Р 7.0.97: заголовок, номер сертификата, владелец, срок действия. Предпросмотр появится после выбора сертификата:</div>
-      <div id="sealPrev" style="margin-top:12px"></div>
+      </details>
     </div>
   </section>
 
@@ -394,21 +412,35 @@ document.addEventListener('click', e=>{ if (!$('certSelect').contains(e.target))
 document.addEventListener('keydown', e=>{ if (e.key==='Escape') closeCertPanel(); });
 
 // ---------- предпросмотр оттиска ----------
-function sealLines(c){
+function fmtDateTime(d){ return d.toLocaleDateString('ru-RU')+' '+d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}); }
+
+// строки под заголовком штампа — используются и в живом превью, и при рисовании на странице PDF
+function sealLines(c, signedAt){
   return [
-    'ДОКУМЕНТ ПОДПИСАН',
-    'ЭЛЕКТРОННОЙ ПОДПИСЬЮ',
     'Сертификат: '+c.serialHex,
     'Владелец: '+cn(c.subject),
     'Действителен: '+fmtDate(c.from)+' — '+fmtDate(c.to),
+    'Подписано: '+fmtDateTime(signedAt||new Date()),
   ];
 }
+
+// заглушка для превью, пока сертификат не выбран — чтобы штамп было видно сразу
+const SAMPLE_CERT = {
+  serialHex: '00AA11BB22CC33DD44',
+  subject: 'CN=ООО "Рога и Копыта",O=ООО "Рога и Копыта"',
+  from: new Date(),
+  to: new Date(Date.now()+365*24*3600*1000),
+};
+
 function updateSealPreview(){
-  if (selected===null){ $('sealPrev').innerHTML=''; return; }
-  const c=certs[selected];
+  const sample = selected===null;
+  const c = sample ? SAMPLE_CERT : certs[selected];
   $('sealPrev').innerHTML =
-    `<div class="seal-preview"><div class="t">ДОКУМЕНТ ПОДПИСАН ЭЛЕКТРОННОЙ ПОДПИСЬЮ</div>
-     <div class="m">Сертификат: ${c.serialHex}<br>Владелец: ${cn(c.subject)}<br>Действителен: ${fmtDate(c.from)} — ${fmtDate(c.to)}</div></div>`;
+    `<div class="seal-preview${sample?' sample':''}">
+       ${sample?'<span class="sampleTag">образец</span>':''}
+       <div class="t">ДОКУМЕНТ ПОДПИСАН ЭЛЕКТРОННОЙ ПОДПИСЬЮ</div>
+       <div class="m">${sealLines(c).join('<br>')}</div>
+     </div>`;
 }
 
 // ---------- байтовые утилиты ----------
@@ -443,21 +475,17 @@ async function buildWithPlaceholder(src, c){
   const page = pages[pIdx-1];
   const { width } = page.getSize();
 
-  // геометрия оттиска
-  const w=230, h=70;
+  // геометрия оттиска (выше на 10пт — под 4-ю строку с датой подписания)
+  const w=230, h=80;
   const mr=parseFloat($('mr').value)||40, mb=parseFloat($('mb').value)||40;
   const x = width - w - mr, y = mb;
+  const signedAt = new Date();
 
   // рисуем штамп в контент страницы
   page.drawRectangle({x,y,width:w,height:h,borderColor:rgb(0.12,0.36,0.24),borderWidth:1.4,color:rgb(1,1,1)});
   page.drawText('ДОКУМЕНТ ПОДПИСАН',{x:x+9,y:y+h-16,size:9,font:fontBold,color:rgb(0.12,0.36,0.24)});
   page.drawText('ЭЛЕКТРОННОЙ ПОДПИСЬЮ',{x:x+9,y:y+h-27,size:9,font:fontBold,color:rgb(0.12,0.36,0.24)});
-  const lines=[
-    'Сертификат: '+c.serialHex,
-    'Владелец: '+cn(c.subject),
-    'Действителен: '+fmtDate(c.from)+' — '+fmtDate(c.to),
-  ];
-  lines.forEach((t,i)=>page.drawText(t,{x:x+9,y:y+h-40-i*10,size:7,font:font,color:rgb(0.23,0.36,0.29)}));
+  sealLines(c,signedAt).forEach((t,i)=>page.drawText(t,{x:x+9,y:y+h-40-i*10,size:7,font:font,color:rgb(0.23,0.36,0.29)}));
 
   // ---- low-level: signature dict + field + widget ----
   const ctx = doc.context;
@@ -474,7 +502,7 @@ async function buildWithPlaceholder(src, c){
     Contents:PDFHexString.of('0'.repeat(SIG_HEX_LEN)),
     Reason:PDFString.of($('reason').value||''),
     Name:PDFString.of(cn(c.subject)),
-    M:PDFString.of(pdfDate(new Date())),
+    M:PDFString.of(pdfDate(signedAt)),
   });
   const sigRef = ctx.register(sigDict);
 
@@ -608,6 +636,7 @@ $('reload').onclick=loadCerts;
 ['page','mr','mb','reason'].forEach(id=>$(id).addEventListener('input',()=>{}));
 
 // ---------- старт ----------
+updateSealPreview();
 (async()=>{
   const ok=await initPlugin();
   if(ok) await loadCerts();
