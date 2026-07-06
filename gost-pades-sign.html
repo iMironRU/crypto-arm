@@ -117,6 +117,13 @@
     text-decoration:none;font-size:12.5px;font-weight:700;background:#fff;transition:background .15s}
   .banner a.pluginLink:hover{background:var(--warn-soft)}
   .flex{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .buildInfo{text-align:center;font-size:11.5px;color:var(--muted);margin-top:18px;font-family:var(--mono)}
+  .buildInfo a{color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--line)}
+  .buildInfo a:hover{color:var(--ink);border-color:var(--muted)}
+  .updateBanner{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:50;
+    background:var(--ink);color:#fff;padding:10px 14px;border-radius:var(--radius-sm);font-size:13px;
+    display:flex;gap:10px;align-items:center;box-shadow:0 12px 32px -8px rgba(20,20,15,.35)}
+  .updateBanner button{padding:6px 12px;font-size:12.5px;background:var(--seal);border-color:var(--seal)}
 </style>
 </head>
 <body>
@@ -201,6 +208,8 @@
     <div class="head"><span>Журнал</span></div>
     <div class="body" style="padding:0"><div class="log" id="log">готов к работе…\n</div></div>
   </section>
+
+  <footer id="buildInfo" class="buildInfo">версия: —</footer>
 </div>
 
 <script type="module">
@@ -702,7 +711,19 @@ async function sign(){
     a2.href=url; a2.download=fname; a2.click();
     URL.revokeObjectURL(url);
     $('pdfState').textContent = `${fname} · подписей: ${signCount}`;
-    $('env').innerHTML=`<div class="banner ok">Готово. ${fname} сохранён (подписей на документе: ${signCount}). Хочешь добавить ещё одну подпись — выбери другой сертификат и нажми «Подписать» снова, документ в памяти уже обновлён. Проверить можно любым верификатором PAdES (КриптоАРМ, Adobe, sign.kloud.one).</div>`;
+
+    // сбрасываем выбранный сертификат — чтобы вторую подпись нельзя было
+    // случайно поставить тем же сертификатом не глядя, и явно предложить выбрать другой
+    selected = null;
+    updateCertTrigger();
+    updateSealPreview();
+
+    $('env').innerHTML=`<div class="banner ok">
+      Готово. ${fname} сохранён (подписей на документе: ${signCount}).<br>
+      Чтобы добавить ещё одну подпись на этот же документ: выбери в блоке «2 · Сертификат» другой сертификат
+      и снова нажми «Подписать» — файл в памяти уже обновлён, повторно загружать его не нужно.<br>
+      Проверить результат можно любым верификатором PAdES (КриптоАРМ, Adobe, sign.kloud.one).
+    </div>`;
     log(`✓ документ подписан (подписей: ${signCount})`,'ok');
   }catch(e){
     log('ошибка: '+errText(e),'err');
@@ -735,14 +756,61 @@ drop.addEventListener('drop',e=>loadPdfFile(e.dataTransfer.files[0]));
 function refreshSignBtn(){
   const ok = pdfBytes && selected!==null;
   $('sign').disabled=!ok;
-  $('signHint').textContent = ok ? '' : 'нужен PDF и выбранный сертификат';
+  $('sign').textContent = signCount>0 ? 'Добавить ещё одну подпись' : 'Подписать и встроить в PDF';
+  $('signHint').textContent = ok ? ''
+    : (signCount>0 ? `документ уже подписан (${signCount}) — выбери ещё один сертификат, чтобы подписать снова`
+                   : 'нужен PDF и выбранный сертификат');
 }
 $('sign').onclick=sign;
 $('reload').onclick=loadCerts;
 ['page','mr','mb','reason'].forEach(id=>$(id).addEventListener('input',()=>{}));
 
+// ---------- версия страницы (номер коммита gh-pages) ----------
+async function loadBuildInfo(){
+  try{
+    const res = await fetch('https://api.github.com/repos/iMironRU/crypto-arm/commits/gh-pages', {cache:'no-store'});
+    if (!res.ok) throw new Error('GitHub API '+res.status);
+    const data = await res.json();
+    const sha = data.sha.slice(0,7);
+    const when = new Date(data.commit.committer.date).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'});
+    $('buildInfo').innerHTML = `версия: <a href="${data.html_url}" target="_blank" rel="noopener">${sha}</a> · ${when}`;
+  }catch(_){
+    $('buildInfo').textContent = 'версия: не удалось определить';
+  }
+}
+
+// ---------- самообновление устаревшей закешированной страницы ----------
+// GitHub Pages отдаёт HTML с Cache-Control: max-age=600 — до 10 минут браузер
+// может показывать старую версию без ручной проверки. Раз в загрузку страницы
+// делаем "тихий" no-store запрос за актуальным ETag и, если он отличается от
+// того, что видели в прошлый раз в этом браузере, предлагаем обновиться (без
+// автоматического релоада — чтобы не потерять то, что человек уже заполнил).
+async function checkStaleCache(){
+  try{
+    const res = await fetch(location.pathname, {cache:'no-store'});
+    const tag = res.headers.get('etag') || res.headers.get('last-modified');
+    if (!tag) return;
+    const key='cryptoArmPageTag';
+    const prev = localStorage.getItem(key);
+    localStorage.setItem(key, tag);
+    if (prev && prev!==tag){
+      const bar=document.createElement('div');
+      bar.className='updateBanner';
+      bar.innerHTML='<span>Доступна новая версия страницы</span><button type="button">Обновить</button>';
+      bar.querySelector('button').onclick=()=>{
+        const u=new URL(location.href);
+        u.searchParams.set('_v', Date.now()); // cache-busting — гарантированно свежая загрузка
+        location.href=u.toString();
+      };
+      document.body.appendChild(bar);
+    }
+  }catch(_){}
+}
+
 // ---------- старт ----------
 updateSealPreview();
+loadBuildInfo();
+checkStaleCache();
 (async()=>{
   const ok=await initPlugin();
   if(ok) await loadCerts();
