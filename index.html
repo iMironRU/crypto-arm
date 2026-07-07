@@ -256,6 +256,37 @@ const SIG_HEX_LEN = 16384;        // резерв под /Contents (hex-симв
 const CADESCOM_CADES_BES = 1;
 const CADESCOM_BASE64_TO_BINARY = 1;
 
+// префикс имени поля подписи (/T) — по нему узнаём в уже загруженном PDF,
+// что штампы поставил этот инструмент (а не сторонний), и с какого номера
+// продолжать стопку — актуально, когда файл уже подписан кем-то другим
+// в другом браузере и его же приносят подписать ещё раз
+const STAMP_FIELD_PREFIX = 'CryptoArmSig-';
+
+// считает, сколько наших штампов уже стоит в файле — используем как
+// стартовый signCount при загрузке, чтобы новый штамп не лёг на старый
+async function countExistingStamps(bytes){
+  try{
+    const doc = await PDFDocument.load(bytes);
+    const ctx = doc.context;
+    const acroRaw = doc.catalog.get(PDFName.of('AcroForm'));
+    if (!acroRaw) return 0;
+    const acro = acroRaw instanceof PDFRef ? ctx.lookup(acroRaw) : acroRaw;
+    const fieldsRaw = acro && acro.get(PDFName.of('Fields'));
+    if (!fieldsRaw) return 0;
+    const fields = fieldsRaw instanceof PDFRef ? ctx.lookup(fieldsRaw) : fieldsRaw;
+    if (!fields || typeof fields.size!=='function') return 0;
+    let count=0;
+    for (let i=0;i<fields.size();i++){
+      const ref = fields.get(i);
+      const field = ref instanceof PDFRef ? ctx.lookup(ref) : ref;
+      const t = field && field.get && field.get(PDFName.of('T'));
+      const name = t && typeof t.decodeText==='function' ? t.decodeText() : null;
+      if (typeof name==='string' && name.startsWith(STAMP_FIELD_PREFIX)) count++;
+    }
+    return count;
+  }catch(_){ return 0; } // не похоже на PDF или что-то нестандартное — просто начнём с нуля
+}
+
 // OID алгоритма ключа сертификата -> алгоритм хеширования плагина
 const HASH_BY_OID = {
   '1.2.643.7.1.1.1.1': 'CADESCOM_HASH_ALGORITHM_CP_GOST_3411_2012_256',
@@ -621,7 +652,7 @@ async function buildIncremental(src, c, stampIndex){
 
   const widget = ctx.obj({
     Type:'Annot', Subtype:'Widget', FT:'Sig',
-    Rect:[x,y,x+w,y+h], V:sigRef, T:PDFString.of('Signature'+(preExistingMax+1)),
+    Rect:[x,y,x+w,y+h], V:sigRef, T:PDFString.of(STAMP_FIELD_PREFIX+(preExistingMax+1)),
     F:4, P:page.ref,
   });
   const widgetRef = ctx.register(widget);
@@ -876,12 +907,19 @@ function loadPdfFiles(fileList){
   if (files.length>toLoad.length) log(`выбрано ${files.length}, загружено только ${toLoad.length} — лимит ${MAX_DOCS} файлов за раз`,'err');
   toLoad.forEach(file=>{
     const r=new FileReader();
-    r.onload=()=>{
-      docs.push({ name:file.name, baseName:file.name.replace(/\.pdf$/i,'')||'document', bytes:new Uint8Array(r.result), signCount:0 });
+    r.onload=async ()=>{
+      const bytes=new Uint8Array(r.result);
+      // если файл уже подписан этим инструментом (в т.ч. другим человеком в
+      // другом браузере), продолжаем нумерацию штампов с того места, где
+      // остановились — иначе новый штамп лёг бы прямо на уже стоящий
+      const existing = await countExistingStamps(bytes);
+      docs.push({ name:file.name, baseName:file.name.replace(/\.pdf$/i,'')||'document', bytes, signCount:existing });
       renderDocList();
       refreshSignBtn();
       updateSealPreview();
-      log('PDF загружен: '+file.name,'dim');
+      log(existing>0
+        ? `PDF загружен: ${file.name} — уже подписан этим инструментом (${existing}), новые штампы продолжат стопку`
+        : 'PDF загружен: '+file.name, 'dim');
     };
     r.readAsArrayBuffer(file);
   });
