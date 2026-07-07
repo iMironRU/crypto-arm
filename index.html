@@ -126,6 +126,13 @@
   .banner{padding:12px 15px;font-size:13px;margin-bottom:16px;border:1px solid;border-radius:var(--radius-sm)}
   .banner.err{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
   .banner.ok{background:var(--seal-soft);border-color:var(--seal);color:var(--seal-dark)}
+  .banner.info{background:#f0f4ff;border-color:#b8c8f0;color:#334}
+  .banner.info .setupLinks{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .banner.info .setupLinks a{display:inline-flex;align-items:center;gap:5px;padding:6px 12px;
+    border:1px solid #b8c8f0;border-radius:var(--radius-sm);color:#1a3a8a;font-size:12.5px;
+    font-weight:600;text-decoration:none;background:#fff;transition:background .15s}
+  .banner.info .setupLinks a:hover{background:#e6eeff;border-color:#8aabee}
+  .banner.info .setupLinks a svg{flex:none}
   .banner a{color:inherit;font-weight:700;text-decoration:underline}
   .banner a.pluginLink{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;
     border:1px solid var(--warn);border-radius:var(--radius-sm);color:var(--warn);
@@ -151,6 +158,20 @@
     <h1>Встроенная подпись PDF — PAdES / ГОСТ</h1>
     <div class="sub">КриптоПро ЭЦП Browser plug-in · CAdES-BES detached в структуре PDF · видимый оттиск по ГОСТ Р 7.0.97</div>
   </header>
+
+  <div class="banner info">
+    <strong>Нет КриптоПро?</strong> Настроить можно через любой из сервисов:
+    <div class="setupLinks">
+      <a href="https://install.kontur.ru/crypto" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5A5.5 5.5 0 1 1 1.5 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M1.5 3.5V7H5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Контур.Крипто
+      </a>
+      <a href="https://online.saby.ru/reg/" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5A5.5 5.5 0 1 1 1.5 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M1.5 3.5V7H5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        СБИС
+      </a>
+    </div>
+  </div>
 
   <div id="env"></div>
 
