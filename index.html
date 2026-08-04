@@ -98,7 +98,8 @@
   .docItem .docInfo{flex:1;min-width:0}
   .docItem .who{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .docItem .meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:2px}
-  .docRemove{flex:none;width:24px;height:24px;padding:0;border-radius:50%;font-size:13px;line-height:1;
+  .docActions{display:flex;align-items:center;gap:6px;flex:none}
+  .docRemove{width:24px;height:24px;padding:0;border-radius:50%;font-size:13px;line-height:1;
     background:transparent;border:1px solid var(--line);color:var(--muted)}
   .docRemove:hover{border-color:var(--warn);color:var(--warn);background:var(--warn-soft)}
 
@@ -592,6 +593,74 @@ function base64ToHex(b64){
   return h;
 }
 
+// ---------- проверка подписей ----------
+function findAllPdfSignatures(bytes){
+  const sigs=[]; let from=0;
+  while(true){
+    const brPos=findBytes(bytes,'/ByteRange',from);
+    if(brPos<0) break;
+    from=brPos+1;
+    const brOpen=findBytes(bytes,'[',brPos);
+    const brClose=findBytes(bytes,']',brOpen);
+    if(brOpen<0||brClose<0||brOpen-brPos>30) continue;
+    const parts=String.fromCharCode(...bytes.slice(brOpen+1,brClose)).trim().split(/\s+/).map(Number);
+    if(parts.length!==4||parts.some(n=>isNaN(n)||n<0)) continue;
+    const [p1,l1,p2,l2]=parts;
+    if(l1<=0||l2<=0||p2<=0||p1+l1>bytes.length||p2+l2>bytes.length) continue;
+    const cPos=findBytes(bytes,'/Contents',brPos);
+    if(cPos<0||cPos-brPos>1024) continue;
+    const hexOpen=findBytes(bytes,'<',cPos);
+    const hexClose=findBytes(bytes,'>',hexOpen+1);
+    if(hexOpen<0||hexClose<0||hexOpen-cPos>20) continue;
+    const hexStr=String.fromCharCode(...bytes.slice(hexOpen+1,hexClose));
+    if(hexStr.length<4) continue;
+    const sigBytes=new Uint8Array(hexStr.length/2);
+    for(let i=0;i<sigBytes.length;i++) sigBytes[i]=parseInt(hexStr.slice(i*2,i*2+2),16);
+    if(sigBytes.every(b=>b===0)||sigBytes[0]!==0x30) continue; // placeholder или не DER
+    sigs.push({byteRange:parts,contents:sigBytes});
+  }
+  return sigs;
+}
+
+async function verifyDoc(i){
+  const d=docs[i];
+  log(`Проверка подписей «${d.name}»…`,'dim');
+  let sigs;
+  try{ sigs=findAllPdfSignatures(d.bytes); }
+  catch(e){ log('Ошибка разбора PDF: '+errText(e),'err'); return; }
+  if(!sigs.length){ log('Подписей в файле не найдено','dim'); return; }
+  log(`Найдено подписей: ${sigs.length}`,'dim');
+  try{ await ensurePlugin(); }
+  catch(e){ log('Плагин недоступен: '+errText(e),'err'); return; }
+  const cp=window.cadesplugin;
+  for(let s=0;s<sigs.length;s++){
+    const sig=sigs[s];
+    const [p1,l1,p2,l2]=sig.byteRange;
+    const signedBytes=new Uint8Array(l1+l2);
+    signedBytes.set(d.bytes.slice(p1,p1+l1),0);
+    signedBytes.set(d.bytes.slice(p2,p2+l2),l1);
+    try{
+      const oSD=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
+      await oSD.propset_ContentEncoding(CADESCOM_BASE64_TO_BINARY);
+      await oSD.propset_Content(u8ToBase64(signedBytes));
+      await oSD.VerifyDetachedAsync(u8ToBase64(sig.contents),CADESCOM_CADES_BES);
+      const signers=await oSD.Signers;
+      const cnt=await signers.Count;
+      for(let j=1;j<=cnt;j++){
+        const signer=await signers.Item(j);
+        const cert=await signer.Certificate;
+        const subj=await cert.SubjectName;
+        const validTo=await cert.ValidToDate;
+        const name=(subj.match(/CN=([^,]+)/)||[])[1]||subj;
+        const date=new Date(validTo).toLocaleDateString('ru-RU');
+        log(`✓ Подпись ${s+1}: действительна — ${name} (сертификат до ${date})`,'ok');
+      }
+    }catch(e){
+      log(`✗ Подпись ${s+1}: недействительна — ${errText(e)}`,'err');
+    }
+  }
+}
+
 // ---------- инкрементальная подпись ----------
 // Вместо полного пересохранения (doc.save()) дописываем в конец файла ТОЛЬКО
 // новые/изменённые объекты + новый xref со /Prev на старый. Существующие байты
@@ -906,10 +975,16 @@ function renderDocList(){
         <div class="who">${d.name}</div>
         <div class="meta">подписей: ${d.signCount}</div>
       </div>
-      <button type="button" class="docRemove" data-i="${i}" title="Убрать из списка">✕</button>
+      <div class="docActions">
+        <button type="button" class="ghost verifyBtn" data-i="${i}" style="padding:4px 10px;font-size:12px">Проверить</button>
+        <button type="button" class="docRemove" data-i="${i}" title="Убрать из списка">✕</button>
+      </div>
     </div>`).join('');
   list.querySelectorAll('.docRemove').forEach(btn=>{
     btn.onclick=(e)=>{ e.stopPropagation(); docs.splice(+btn.dataset.i,1); renderDocList(); refreshSignBtn(); updateSealPreview(); };
+  });
+  list.querySelectorAll('.verifyBtn').forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); verifyDoc(+btn.dataset.i); };
   });
 }
 
