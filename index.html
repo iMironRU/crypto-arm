@@ -811,18 +811,20 @@ async function runOneSigVerify(contentBytes, sigBytes){
         log('[dbg] readSigners после DEFAULT: '+(signer?signer.name:'null'),'dim');
       }catch(e3){ log('[dbg] readSigners(DEFAULT) → '+errText(e3),'dim'); }
     }
+    // Если plugin дал подписанта — математика подтверждена (хотя бы DEFAULT-проверкой)
+    if(signer){ kind='expired'; }
 
-    // Шаг 2: если плагин не помог — разбираем CMS-структуру напрямую из байт подписи
+    // Шаг 2: если плагин не смог ничего проверить — разбираем CMS-структуру напрямую из байт.
+    // ВАЖНО: в этом случае математическая проверка подписи НЕ выполнялась.
+    // kind остаётся 'chain', чтобы UI явно показывал что соответствие документу не подтверждено.
     if(!signer){
       log('[dbg] пробую ASN.1-разбор подписи…','dim');
       try{
         signer=extractCMSSignerInfo(sigBytes);
         log('[dbg] ASN.1: '+(signer?signer.name:'(null)'),'dim');
       }catch(ep){ log('[dbg] ASN.1 → '+errText(ep),'dim'); }
+      // kind='chain' сохраняется — математика не проверена
     }
-
-    // если нашли подписанта — скорее всего причина в просроченном сертификате
-    if(signer) kind='expired';
   }
 
   return {ok,kind,rawErr,signer,sigMethod};
@@ -1147,8 +1149,13 @@ async function getPluginVersion(){
 
 function buildVerifyCard(res, label, lr){
   const ok=res.ok, exp=res.kind==='expired';
-  const statusCls=ok?'ok':exp?'warn':'err';
-  const statusText=ok?'Подпись действительна':exp?'Сертификат истёк — математически верна':'Подпись недействительна';
+  // chain + signer: плагин не смог проверить математику, данные получены из ASN.1
+  const chainWithCert=!ok&&!exp&&res.kind==='chain'&&!!res.signer;
+  const statusCls=ok?'ok':(exp||chainWithCert)?'warn':'err';
+  const statusText=ok?'Подпись действительна'
+    :exp?'Сертификат истёк — математически верна'
+    :chainWithCert?'Математическая проверка невозможна'
+    :'Подпись недействительна';
   const s=res.signer;
   const nm=s?s.name:'неизвестен';
   const serial=s?((s.serial||'').toUpperCase().match(/.{1,4}/g)||[]).join(' '):'—';
@@ -1159,11 +1166,12 @@ function buildVerifyCard(res, label, lr){
   const vas=s?.validAtSigning;
   const row=(lbl,val,cls='')=>val?`<div class="protoRow"><span class="protoLbl">${lbl}</span><span${cls?' class="'+cls+'"':''}>${val}</span></div>`:'';
   const signingTimeRow=signingTime?row('Время подписания',signingTime.toLocaleString('ru-RU')):'';
-  const vasRow=exp&&signingTime?row('Серт. при подписании',
+  const vasRow=(exp||chainWithCert)&&signingTime?row('Серт. при подписании',
     vas===true?'Был действителен':vas===false?'Уже не действовал':'Не удалось определить',
     vas===true?'ok':vas===false?'err':'warn'):'';
-  const errLine=!ok&&!exp&&res.rawErr?row('Ошибка',errText(res.rawErr).slice(0,200),'err'):'';
+  const errLine=!ok&&!exp&&!chainWithCert&&res.rawErr?row('Ошибка',errText(res.rawErr).slice(0,200),'err'):'';
   const warnLine=exp&&vas!==true?`<div class="protoWarn">Для признания подписи юридически значимой необходима проверка метки времени (TSP).</div>`:'';
+  const chainWarn=chainWithCert?`<div class="protoWarn">КриптоПро не смог проверить подпись — недоступна цепочка сертификатов (сертификат истёк или нет доступа к CRL/OCSP). Данные подписанта извлечены из файла подписи, но <strong>соответствие этому документу не подтверждено</strong>.</div>`:'';
   return `<div class="protoCard ${statusCls}">
     <div class="protoStatus ${statusCls}">${statusText}</div>
     <div class="protoLabel">${label}</div>
@@ -1174,13 +1182,13 @@ function buildVerifyCard(res, label, lr){
       ${row('Город',s?.city)}
       ${row('Email',s?.email)}
       ${row('Серийный №',`<span class="mono">${serial}</span>`)}
-      <div class="protoRow"><span class="protoLbl">Срок действия</span><span${exp?' class="warn"':''}>${from} — ${to}</span></div>
+      <div class="protoRow"><span class="protoLbl">Срок действия</span><span${(exp||chainWithCert)?' class="warn"':''}>${from} — ${to}</span></div>
       ${signingTimeRow}${vasRow}
       ${row('Издатель',issuer)}
       ${row('Метод','КриптоПро ЭЦП · CAdES-BES · '+(res.sigMethod||'—'))}
       ${errLine}
     </div>
-    ${warnLine}
+    ${warnLine}${chainWarn}
     <button class="ghost protoZipBtn" style="margin-top:10px;padding:5px 14px;font-size:12px">Скачать протокол ZIP</button>
   </div>`;
 }
@@ -1206,7 +1214,8 @@ async function verifyDetachedPair(docObj, sigObj){
   item.innerHTML=buildVerifyCard(res,label,lr);
   item.querySelector('.protoZipBtn').onclick=()=>downloadProtocolZip(lr);
   $('clearDetached').hidden=false;
-  log(`Откр. подпись «${docObj.name}»: `+(res.ok?'✓ действительна':res.kind==='expired'?'⚠ серт. истёк':'✗ недействит.'), res.ok?'ok':res.kind==='expired'?'warn':'err');
+  const _chainCert=!res.ok&&res.kind==='chain'&&!!res.signer;
+  log(`Откр. подпись «${docObj.name}»: `+(res.ok?'✓ действительна':res.kind==='expired'?'⚠ серт. истёк':_chainCert?'⚠ не проверена (цепочка недоступна)':'✗ недействит.'), res.ok?'ok':(res.kind==='expired'||_chainCert)?'warn':'err');
 }
 
 // ---------- инкрементальная подпись ----------
