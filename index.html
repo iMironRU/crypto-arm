@@ -288,14 +288,14 @@
     <section>
       <div class="head"><span>Открепленная подпись (.sig / .p7s)</span></div>
       <div class="body">
-        <div class="note" style="margin-top:0">Выбери документ и .sig файл — проверка запустится автоматически. Или выбери .zip архив (с документом и подписью внутри) в любое из полей.</div>
+        <div class="note" style="margin-top:0">Выбери документ и файл подписи — проверка запустится автоматически как только оба выбраны.</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
           <label class="fileSmall" id="detDocLabel">
-            <input type="file" id="detDocFile" accept=".zip,*">
-            <span id="detDocName">Документ или .zip архив — не выбран</span>
+            <input type="file" id="detDocFile">
+            <span id="detDocName">Документ — не выбран</span>
           </label>
           <label class="fileSmall" id="detSigLabel">
-            <input type="file" id="detSigFile" accept=".sig,.p7s,.cms,.der,.zip">
+            <input type="file" id="detSigFile" accept=".sig,.p7s,.cms,.der">
             <span id="detSigName">Подпись (.sig / .p7s) — не выбрана</span>
           </label>
         </div>
@@ -1361,45 +1361,22 @@ verifyDrop.addEventListener('drop',e=>{
   });
 });
 
-// ---------- открепленная проверка — два отдельных инпута + ZIP ----------
-const SIG_EXTS = /\.(sig|p7s|cms|der)$/i;
+// ---------- открепленная проверка — два отдельных инпута ----------
 let detDoc=null, detSig=null;
 async function tryDetVerify(){
   if(!detDoc||!detSig) return;
   $('detResult').innerHTML='';
   await verifyDetachedPair(detDoc, detSig);
 }
-async function verifyFromZip(file){
-  const { default: JSZip } = await import('https://esm.sh/jszip@3.10.1');
-  let zip;
-  try{ zip = await JSZip.loadAsync(file); }
-  catch(e){ log('Не удалось открыть ZIP: '+errText(e),'err'); return; }
-  const entries = Object.values(zip.files).filter(f=>!f.dir);
-  const sigEntry = entries.find(f=>SIG_EXTS.test(f.name));
-  const docEntry = entries.find(f=>!SIG_EXTS.test(f.name));
-  if(!sigEntry||!docEntry){ log('В архиве должны быть документ и файл подписи (.sig/.p7s)','err'); return; }
-  const sigBytes = new Uint8Array(await sigEntry.async('arraybuffer'));
-  const docBytes = new Uint8Array(await docEntry.async('arraybuffer'));
-  const sigName = sigEntry.name.split('/').pop();
-  const docName = docEntry.name.split('/').pop();
-  $('detDocName').textContent = docName;
-  $('detSigName').textContent = sigName;
-  detDoc = {name:docName, bytes:docBytes};
-  detSig = {name:sigName, bytes:sigBytes};
-  $('detResult').innerHTML='';
-  await verifyDetachedPair(detDoc, detSig);
-}
 $('detDocFile').onchange=e=>{
   const f=e.target.files[0]; if(!f) return;
   e.target.value='';
-  if(f.name.toLowerCase().endsWith('.zip')){ verifyFromZip(f); return; }
   $('detDocName').textContent=f.name;
   readFileAsObj(f).then(obj=>{ detDoc=obj; tryDetVerify(); });
 };
 $('detSigFile').onchange=e=>{
   const f=e.target.files[0]; if(!f) return;
   e.target.value='';
-  if(f.name.toLowerCase().endsWith('.zip')){ verifyFromZip(f); return; }
   $('detSigName').textContent=f.name;
   readFileAsObj(f).then(obj=>{ detSig=obj; tryDetVerify(); });
 };
