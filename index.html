@@ -288,21 +288,12 @@
     <section>
       <div class="head"><span>Открепленная подпись (.sig / .p7s)</span></div>
       <div class="body">
-        <div class="note" style="margin-top:0">Любой файл + отдельный файл подписи — КриптоПро проверит пару и покажет данные подписанта.</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
-          <label class="fileSmall">
-            <input type="file" id="detFile">
-            <span id="detFileName">Документ — не выбран</span>
-          </label>
-          <label class="fileSmall">
-            <input type="file" id="detSig" accept=".sig,.p7s,.cms,.der">
-            <span id="detSigName">Подпись (.sig / .p7s) — не выбрана</span>
-          </label>
-        </div>
-        <div class="flex" style="margin-top:12px">
-          <button class="ghost" id="detVerifyBtn" disabled>Проверить подпись</button>
-        </div>
-        <div id="detResult"></div>
+        <div class="note" style="margin-top:0">Выбери или перетащи сразу оба файла — документ и .sig/.p7s. Пары подбираются автоматически по имени.</div>
+        <label class="file" id="detDrop">
+          <input type="file" id="detFiles" multiple>
+          Выбери или перетащи документ + файл подписи (.sig)
+        </label>
+        <div id="detResult" class="verifyList"></div>
       </div>
     </section>
   </div>
@@ -383,8 +374,6 @@ const MAX_DOCS = 5;          // сколько файлов можно подп�
 let docs = [];                // [{name, baseName, bytes, signCount}] — каждый файл со своим счётчиком подписей
 let certs = [];              // [{cert, subject, serialHex, from, to, oid}]
 let selected = new Set();    // индексы выбранных сертификатов — подписываем каждым по очереди
-let detachedFile = null;     // {name, bytes} — документ для открепленной проверки
-let detachedSig  = null;     // {name, bytes} — файл подписи
 let lastVerifyResults = null;// последние результаты — для кнопки "Скачать протокол"
 
 // ---------- окружение ----------
@@ -845,35 +834,72 @@ async function verifyDoc(i){
   showVerifyBanner(rows,d.name);
 }
 
-async function verifyDetached(){
-  if(!detachedFile||!detachedSig){ log('нужны оба файла — документ и подпись','err'); return; }
-  log(`Проверка «${detachedFile.name}» + «${detachedSig.name}»…`,'dim');
-  try{ await ensurePlugin(); }
-  catch(e){ log('Плагин недоступен: '+errText(e),'err'); return; }
-  const res=await runOneSigVerify(detachedFile.bytes,detachedSig.bytes);
-  const rows=[res];
-  let msg,cls;
-  if(res.ok){
-    const nm=res.signer?res.signer.name:'неизвестен';
-    const dt=res.signer?res.signer.to.toLocaleDateString('ru-RU'):'?';
-    msg=`✓ Подпись действительна — ${nm} (сертификат до ${dt})`;
-    cls='ok'; log(msg,'ok');
-  }else if(res.kind==='expired'){
-    const nm=res.signer?res.signer.name:'неизвестен';
-    const dt=res.signer?res.signer.to.toLocaleDateString('ru-RU'):'?';
-    msg=`⚠ Сертификат истёк (${dt}), ${nm} — подпись математически верна`;
-    cls='warn'; log(msg,'warn');
-  }else{
-    msg=`✗ Подпись недействительна — ${errText(res.rawErr)}`;
-    cls='err'; log(msg,'err');
+const SIG_EXTS = /\.(sig|p7s|cms|der)$/i;
+
+function pairDetachedFiles(files){
+  const sigs = files.filter(f => SIG_EXTS.test(f.name));
+  const docs = files.filter(f => !SIG_EXTS.test(f.name));
+  const usedSigs = new Set();
+  const pairs = [];
+  for(const doc of docs){
+    const base = doc.name;
+    const matched = sigs.find(s => !usedSigs.has(s.name) && (
+      s.name === base+'.sig' || s.name === base+'.p7s' ||
+      s.name.replace(SIG_EXTS,'') === base ||
+      s.name.replace(SIG_EXTS,'') === base.replace(/\.[^.]+$/,'')
+    ));
+    pairs.push({doc, sig: matched||null});
+    if(matched) usedSigs.add(matched.name);
   }
-  lastVerifyResults={docName:detachedFile.name,docBytes:detachedFile.bytes,
-    sigBytes:detachedSig.bytes,sigName:detachedSig.name,rows,date:new Date()};
-  $('detResult').innerHTML=`<div class="banner ${cls}" style="margin-top:10px;margin-bottom:0">
-    ${msg} &nbsp;
-    <button type="button" class="ghost" id="detProtoBtn" style="padding:4px 10px;font-size:12px">Скачать протокол ZIP</button>
-  </div>`;
-  $('detProtoBtn').onclick=()=>downloadProtocolZip(lastVerifyResults);
+  // если один документ и одна подпись не совпали по имени — всё равно парим
+  if(docs.length===1 && sigs.length===1 && pairs[0].sig===null){
+    pairs[0].sig = sigs[0];
+  }
+  // подписи без документа
+  sigs.filter(s=>!usedSigs.has(s.name)).forEach(s=>pairs.push({doc:null,sig:s}));
+  return pairs;
+}
+
+function readFileAsObj(file){
+  return new Promise(res=>{
+    const r=new FileReader();
+    r.onload=()=>res({name:file.name,bytes:new Uint8Array(r.result)});
+    r.readAsArrayBuffer(file);
+  });
+}
+
+async function verifyDetachedPair(docObj, sigObj){
+  const list=$('detResult');
+  const item=document.createElement('div');
+  item.className='verifyItem';
+  if(!docObj||!sigObj){
+    item.innerHTML=`<div class="who">${(docObj||sigObj).name}</div>
+      <div class="sigLine err">✗ ${!docObj?'не найден документ для этой подписи':'не найден файл подписи (.sig/.p7s)'}</div>`;
+    list.appendChild(item); return;
+  }
+  item.innerHTML=`<div class="who">${docObj.name} + ${sigObj.name}</div><div class="sigLine dim">проверяю…</div>`;
+  list.appendChild(item);
+  const statusEl=item.querySelector('.sigLine');
+  try{ await ensurePlugin(); }
+  catch(e){ statusEl.innerHTML=`<span class="err">Плагин недоступен</span>`; return; }
+  const res=await runOneSigVerify(docObj.bytes,sigObj.bytes);
+  const nm=res.signer?res.signer.name:'неизвестен';
+  const dt=res.signer?res.signer.to.toLocaleDateString('ru-RU'):'?';
+  let line;
+  if(res.ok)
+    line=`<span class="ok">✓ Действительна — ${nm} (до ${dt})</span>`;
+  else if(res.kind==='expired')
+    line=`<span class="warn">⚠ Сертификат истёк (${dt}), ${nm} — крипт. верна</span>`;
+  else
+    line=`<span class="err">✗ Недействительна — ${errText(res.rawErr).slice(0,80)}</span>`;
+  statusEl.innerHTML=line;
+  log(`Откр. подпись «${docObj.name}»: `+(res.ok?'✓ действительна':res.kind==='expired'?'⚠ серт. истёк':'✗ недействит.'), res.ok?'ok':res.kind==='expired'?'warn':'err');
+  const lr={docName:docObj.name,docBytes:docObj.bytes,sigBytes:sigObj.bytes,sigName:sigObj.name,rows:[res],date:new Date()};
+  const btn=document.createElement('button');
+  btn.className='ghost'; btn.style.cssText='padding:4px 10px;font-size:12px;margin-top:8px';
+  btn.textContent='Скачать протокол ZIP';
+  btn.onclick=()=>downloadProtocolZip(lr);
+  item.appendChild(btn);
 }
 
 // ---------- инкрементальная подпись ----------
@@ -1309,17 +1335,21 @@ verifyDrop.addEventListener('drop',e=>{
 });
 
 // ---------- открепленная проверка — файловые инпуты ----------
-function readFileInto(input, nameEl, cb){
-  const file=input.files[0];
-  if(!file) return;
-  nameEl.textContent=file.name;
-  const r=new FileReader();
-  r.onload=()=>cb({name:file.name,bytes:new Uint8Array(r.result)});
-  r.readAsArrayBuffer(file);
+async function handleDetFiles(files){
+  if(!files.length) return;
+  $('detResult').innerHTML='';
+  const pairs=pairDetachedFiles([...files]);
+  for(const {doc,sig} of pairs){
+    const docObj=doc?await readFileAsObj(doc):null;
+    const sigObj=sig?await readFileAsObj(sig):null;
+    await verifyDetachedPair(docObj,sigObj);
+  }
 }
-$('detFile').onchange=e=>readFileInto(e.target,$('detFileName'),f=>{ detachedFile=f; $('detVerifyBtn').disabled=!(detachedFile&&detachedSig); });
-$('detSig').onchange=e=>readFileInto(e.target,$('detSigName'),f=>{ detachedSig=f; $('detVerifyBtn').disabled=!(detachedFile&&detachedSig); });
-$('detVerifyBtn').onclick=()=>verifyDetached();
+$('detFiles').onchange=e=>{ handleDetFiles(e.target.files); e.target.value=''; };
+const detDrop=$('detDrop');
+['dragover','dragenter'].forEach(ev=>detDrop.addEventListener(ev,e=>{e.preventDefault();detDrop.style.borderColor='var(--seal)';}));
+['dragleave','drop'].forEach(ev=>detDrop.addEventListener(ev,e=>{e.preventDefault();detDrop.style.borderColor='';}));
+detDrop.addEventListener('drop',e=>handleDetFiles(e.dataTransfer.files));
 
 function refreshSignBtn(){
   const ok = docs.length>0 && selected.size>0;
