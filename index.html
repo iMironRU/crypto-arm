@@ -200,8 +200,8 @@
       <div class="head"><span>1 · Документ</span><span id="docCount">не выбран</span></div>
       <div class="body">
         <label class="file" id="drop">
-          <input type="file" id="pdf" accept="application/pdf" multiple>
-          Выбери до 5 PDF или перетащи сюда
+          <input type="file" id="pdf" multiple>
+          Выбери до 5 файлов или перетащи сюда (PDF — встроенная подпись, остальные — открепленная .sig)
         </label>
         <div id="docList" class="docList"></div>
       </div>
@@ -231,7 +231,7 @@
     </section>
 
     <section>
-      <div class="head"><span>3 · Оттиск</span></div>
+      <div class="head"><span>3 · Оттиск</span><span id="stampNote" class="note" style="margin:0;font-size:11px;text-transform:none;letter-spacing:0">только для PDF</span></div>
       <div class="body">
         <div class="note" style="margin-top:0">Отметка формируется по ГОСТ Р 7.0.97: заголовок, номер сертификата, владелец, срок действия, дата подписания.</div>
         <div id="sealPrev" style="margin:12px 0"></div>
@@ -288,14 +288,14 @@
     <section>
       <div class="head"><span>Открепленная подпись (.sig / .p7s)</span></div>
       <div class="body">
-        <div class="note" style="margin-top:0">Выбери документ и файл подписи — проверка запустится автоматически как только оба выбраны.</div>
+        <div class="note" style="margin-top:0">Выбери документ и .sig файл — проверка запустится автоматически. Или выбери .zip архив (с документом и подписью внутри) в любое из полей.</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
           <label class="fileSmall" id="detDocLabel">
-            <input type="file" id="detDocFile">
-            <span id="detDocName">Документ — не выбран</span>
+            <input type="file" id="detDocFile" accept=".zip,*">
+            <span id="detDocName">Документ или .zip архив — не выбран</span>
           </label>
           <label class="fileSmall" id="detSigLabel">
-            <input type="file" id="detSigFile" accept=".sig,.p7s,.cms,.der">
+            <input type="file" id="detSigFile" accept=".sig,.p7s,.cms,.der,.zip">
             <span id="detSigName">Подпись (.sig / .p7s) — не выбрана</span>
           </label>
         </div>
@@ -1124,10 +1124,20 @@ function downloadBlob(blob, name){
   URL.revokeObjectURL(url);
 }
 
+async function signDetachedFile(c, bytes){
+  await ensurePlugin();
+  const cp = window.cadesplugin;
+  const oSD = await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
+  await oSD.propset_ContentEncoding(CADESCOM_BASE64_TO_BINARY);
+  await oSD.propset_Content(u8ToBase64(bytes));
+  const signerObj = await cp.CreateObjectAsync('CAdESCOM.CPSigner');
+  await signerObj.propset_Certificate(c.cert);
+  const sigB64 = await oSD.SignCades(signerObj, CADESCOM_CADES_BES, true);
+  return b64ToU8(sigB64);
+}
+
 // подписывает КАЖДЫЙ загруженный файл ПО ОЧЕРЕДИ всеми отмеченными
-// сертификатами. Один файл на выходе — скачивается прямо PDF-ом; несколько —
-// собираются в один signed.zip, чтобы браузер не заблокировал кучу
-// параллельных скачиваний и не пришлось разбирать их по одному руками.
+// сертификатами. PDF — встроенная подпись; остальные — открепленная в .zip.
 async function sign(){
   const certList = [...selected].sort((a,b)=>a-b).map(i=>certs[i]);
   if (!certList.length || !docs.length) return;
@@ -1142,6 +1152,7 @@ async function sign(){
   $('sign').disabled=true;
   const total = docs.length*certList.length;
   let done=0, lastError=null, failedDocName=null;
+  const detachedResults = []; // {name, bytes, sigBytes, sigName}[]
 
   outer:
   for (const d of docs){
@@ -1149,8 +1160,13 @@ async function sign(){
       const c=certList[ci];
       try{
         log(`— файл «${d.name}», подпись ${ci+1}/${certList.length} (${cn(c.subject)}) —`,'dim');
-        d.bytes = await signOnce(c, d.bytes, d.signCount);
-        d.signCount++;
+        if(d.isPdf){
+          d.bytes = await signOnce(c, d.bytes, d.signCount);
+          d.signCount++;
+        } else {
+          const sigBytes = await signDetachedFile(c, d.bytes);
+          detachedResults.push({name:d.name, bytes:d.bytes, sigBytes, sigName:d.name+'.sig'});
+        }
         done++;
         log(`✓ готово (${done}/${total})`,'ok');
       }catch(e){
@@ -1162,35 +1178,35 @@ async function sign(){
   }
   renderDocList();
 
-  const signedDocs = docs.filter(d=>d.signCount>0);
-  if (signedDocs.length===1){
-    downloadBlob(new Blob([signedDocs[0].bytes],{type:'application/pdf'}), outputFilename(signedDocs[0]));
-  } else if (signedDocs.length>1){
-    log('собираю zip из подписанных файлов…','dim');
+  const signedPdfs = docs.filter(d=>d.isPdf && d.signCount>0);
+  const needZip = signedPdfs.length+detachedResults.length > 1 || detachedResults.length > 0;
+
+  if (!needZip && signedPdfs.length===1){
+    downloadBlob(new Blob([signedPdfs[0].bytes],{type:'application/pdf'}), outputFilename(signedPdfs[0]));
+  } else if (needZip || signedPdfs.length>1){
+    log('собираю zip…','dim');
     const { default: JSZip } = await import('https://esm.sh/jszip@3.10.1');
     const zip = new JSZip();
-    for (const d of signedDocs) zip.file(outputFilename(d), d.bytes);
+    for (const d of signedPdfs) zip.file(outputFilename(d), d.bytes);
+    for (const r of detachedResults){ zip.file(r.name, r.bytes); zip.file(r.sigName, r.sigBytes); }
     downloadBlob(await zip.generateAsync({type:'blob'}), 'signed.zip');
   }
 
-  // сбрасываем выбор — чтобы следующую подпись нельзя было случайно поставить
-  // тем же набором сертификатов не глядя, и явно предложить выбрать другой
   selected = new Set();
   updateCertTrigger();
   updateSealPreview();
 
+  const allSigned = signedPdfs.length + detachedResults.length;
   if (lastError){
     $('env').innerHTML = `<div class="banner err">
       Подписано ${done} из ${total} операций, прервано на файле «${failedDocName}»: ${errText(lastError)}.
-      ${signedDocs.length?`Уже готовые файлы (${signedDocs.length}) всё равно сохранены${signedDocs.length>1?' в signed.zip':''}.`:''}
+      ${allSigned?`Уже готовые файлы (${allSigned}) всё равно сохранены.`:''}
     </div>`;
   } else {
+    const detNote = detachedResults.length ? `Открепленные подписи (.sig) упакованы в архив вместе с исходными файлами.` : '';
     $('env').innerHTML = `<div class="banner ok">
-      Готово. ${signedDocs.length>1?`Все ${signedDocs.length} файла сохранены одним архивом signed.zip.`:`${outputFilename(signedDocs[0])} сохранён.`}<br>
-      Чтобы добавить ещё подписи на эти же файлы: отметь сертификаты и снова нажми «Подписать» —
-      файлы в памяти уже обновлены, повторно загружать их не нужно.<br>
-      Проверить результат: <a href="https://saas.cryptopro.ru/verifycpca/" target="_blank" rel="noopener">сервис проверки подписей КриптоПро</a>,
-      КриптоАРМ, Adobe или sign.kloud.one.
+      Готово. ${allSigned>1||detachedResults.length?`Файлы сохранены в signed.zip.`:`${outputFilename(signedPdfs[0])} сохранён.`}
+      ${detNote}
     </div>`;
   }
   log(`итог: ${done}/${total} операций подписания выполнено`, lastError?'err':'ok');
@@ -1205,7 +1221,7 @@ function errText(e){
   return String(e);
 }
 
-// ---------- ввод PDF (можно сразу несколько, до MAX_DOCS) ----------
+// ---------- ввод файлов (PDF или любой файл для открепленной подписи) ----------
 function renderDocList(){
   $('docCount').textContent = docs.length ? `${docs.length}/${MAX_DOCS} файл(ов)` : 'не выбран';
   const list = $('docList');
@@ -1214,10 +1230,10 @@ function renderDocList(){
     <div class="docItem">
       <div class="docInfo">
         <div class="who">${d.name}</div>
-        <div class="meta">подписей: ${d.signCount}</div>
+        <div class="meta">${d.isPdf ? `подписей: ${d.signCount}` : 'открепленная подпись (.sig)'}</div>
       </div>
       <div class="docActions">
-        <button type="button" class="ghost verifyBtn" data-i="${i}" style="padding:4px 10px;font-size:12px">Проверить</button>
+        ${d.isPdf ? `<button type="button" class="ghost verifyBtn" data-i="${i}" style="padding:4px 10px;font-size:12px">Проверить</button>` : ''}
         <button type="button" class="docRemove" data-i="${i}" title="Убрать из списка">✕</button>
       </div>
     </div>`).join('');
@@ -1229,7 +1245,7 @@ function renderDocList(){
   });
 }
 
-function loadPdfFiles(fileList){
+function loadFiles(fileList){
   const files=[...fileList].filter(f=>f);
   if (!files.length) return;
   const room = MAX_DOCS-docs.length;
@@ -1237,29 +1253,31 @@ function loadPdfFiles(fileList){
   const toLoad = files.slice(0,room);
   if (files.length>toLoad.length) log(`выбрано ${files.length}, загружено только ${toLoad.length} — лимит ${MAX_DOCS} файлов за раз`,'err');
   toLoad.forEach(file=>{
+    const isPdf = /\.pdf$/i.test(file.name);
     const r=new FileReader();
     r.onload=async ()=>{
       const bytes=new Uint8Array(r.result);
-      // если файл уже подписан этим инструментом (в т.ч. другим человеком в
-      // другом браузере), продолжаем нумерацию штампов с того места, где
-      // остановились — иначе новый штамп лёг бы прямо на уже стоящий
-      const existing = await countExistingStamps(bytes);
-      docs.push({ name:file.name, baseName:file.name.replace(/\.pdf$/i,'')||'document', bytes, signCount:existing });
-      renderDocList();
-      refreshSignBtn();
-      updateSealPreview();
-      log(existing>0
-        ? `PDF загружен: ${file.name} — уже подписан этим инструментом (${existing}), новые штампы продолжат стопку`
-        : 'PDF загружен: '+file.name, 'dim');
+      if(isPdf){
+        const existing = await countExistingStamps(bytes);
+        docs.push({ name:file.name, baseName:file.name.replace(/\.pdf$/i,'')||'document', bytes, signCount:existing, isPdf:true });
+        renderDocList(); refreshSignBtn(); updateSealPreview();
+        log(existing>0
+          ? `PDF загружен: ${file.name} — уже подписан (${existing}), штампы продолжат стопку`
+          : 'PDF загружен: '+file.name, 'dim');
+      } else {
+        docs.push({ name:file.name, baseName:file.name, bytes, signCount:0, isPdf:false });
+        renderDocList(); refreshSignBtn();
+        log('Файл загружен: '+file.name+' (будет открепленная подпись)', 'dim');
+      }
     };
     r.readAsArrayBuffer(file);
   });
 }
-$('pdf').onchange=e=>{ loadPdfFiles(e.target.files); e.target.value=''; };
+$('pdf').onchange=e=>{ loadFiles(e.target.files); e.target.value=''; };
 const drop=$('drop');
 ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor='var(--seal)';}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor='';}));
-drop.addEventListener('drop',e=>loadPdfFiles(e.dataTransfer.files));
+drop.addEventListener('drop',e=>loadFiles(e.dataTransfer.files));
 
 // ---------- табы ----------
 function switchTab(t){
@@ -1334,38 +1352,63 @@ verifyDrop.addEventListener('drop',e=>{
   });
 });
 
-// ---------- открепленная проверка — два отдельных инпута ----------
+// ---------- открепленная проверка — два отдельных инпута + ZIP ----------
+const SIG_EXTS = /\.(sig|p7s|cms|der)$/i;
 let detDoc=null, detSig=null;
 async function tryDetVerify(){
   if(!detDoc||!detSig) return;
   $('detResult').innerHTML='';
   await verifyDetachedPair(detDoc, detSig);
 }
+async function verifyFromZip(file){
+  const { default: JSZip } = await import('https://esm.sh/jszip@3.10.1');
+  let zip;
+  try{ zip = await JSZip.loadAsync(file); }
+  catch(e){ log('Не удалось открыть ZIP: '+errText(e),'err'); return; }
+  const entries = Object.values(zip.files).filter(f=>!f.dir);
+  const sigEntry = entries.find(f=>SIG_EXTS.test(f.name));
+  const docEntry = entries.find(f=>!SIG_EXTS.test(f.name));
+  if(!sigEntry||!docEntry){ log('В архиве должны быть документ и файл подписи (.sig/.p7s)','err'); return; }
+  const sigBytes = new Uint8Array(await sigEntry.async('arraybuffer'));
+  const docBytes = new Uint8Array(await docEntry.async('arraybuffer'));
+  const sigName = sigEntry.name.split('/').pop();
+  const docName = docEntry.name.split('/').pop();
+  $('detDocName').textContent = docName;
+  $('detSigName').textContent = sigName;
+  detDoc = {name:docName, bytes:docBytes};
+  detSig = {name:sigName, bytes:sigBytes};
+  $('detResult').innerHTML='';
+  await verifyDetachedPair(detDoc, detSig);
+}
 $('detDocFile').onchange=e=>{
   const f=e.target.files[0]; if(!f) return;
+  e.target.value='';
+  if(f.name.toLowerCase().endsWith('.zip')){ verifyFromZip(f); return; }
   $('detDocName').textContent=f.name;
   readFileAsObj(f).then(obj=>{ detDoc=obj; tryDetVerify(); });
-  e.target.value='';
 };
 $('detSigFile').onchange=e=>{
   const f=e.target.files[0]; if(!f) return;
+  e.target.value='';
+  if(f.name.toLowerCase().endsWith('.zip')){ verifyFromZip(f); return; }
   $('detSigName').textContent=f.name;
   readFileAsObj(f).then(obj=>{ detSig=obj; tryDetVerify(); });
-  e.target.value='';
 };
 
 function refreshSignBtn(){
   const ok = docs.length>0 && selected.size>0;
   $('sign').disabled=!ok;
-  const totalSigs = docs.reduce((n,d)=>n+d.signCount,0);
-  const label = (docs.length>1 && selected.size>1) ? `Подписать ${docs.length} файла × ${selected.size} серт.`
-    : docs.length>1 ? `Подписать ${docs.length} файла`
-    : selected.size>1 ? `Подписать (${selected.size} шт.) и встроить в PDF`
-    : totalSigs>0 ? 'Добавить ещё одну подпись' : 'Подписать и встроить в PDF';
+  const hasPdf = docs.some(d=>d.isPdf);
+  const hasOther = docs.some(d=>!d.isPdf);
+  const totalSigs = docs.filter(d=>d.isPdf).reduce((n,d)=>n+d.signCount,0);
+  const label = docs.length>1 ? `Подписать ${docs.length} файла`
+    : hasPdf && totalSigs>0 ? 'Добавить ещё одну подпись'
+    : hasPdf ? 'Подписать и встроить в PDF'
+    : 'Подписать (открепленная подпись)';
   $('sign').textContent = label;
-  $('signHint').textContent = ok ? ''
-    : (docs.length===0 ? 'нужен хотя бы один PDF'
-      : totalSigs>0 ? `документ уже подписан — отметь ещё сертификат(ы), чтобы подписать снова`
+  $('signHint').textContent = ok ? (hasOther && !hasPdf ? 'результат — архив .zip с файлом и .sig' : '')
+    : (docs.length===0 ? 'нужен хотя бы один файл'
+      : totalSigs>0 ? 'документ уже подписан — отметь ещё сертификат(ы), чтобы подписать снова'
                     : 'нужен хотя бы один выбранный сертификат');
 }
 $('sign').onclick=sign;
