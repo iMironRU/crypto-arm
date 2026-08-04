@@ -706,6 +706,7 @@ function findAllPdfSignatures(bytes){
 function classifyVerifyErr(e){
   const m=errText(e).toLowerCase();
   if(/истёк|expired|800b0101|cert_e_expired|срок действия/.test(m)) return 'expired';
+  if(/0x8009100e|crypt_e_no_signer|не найден автор/.test(m)) return 'chain';
   if(/не верн|bad.sig|80090006|invalid.sig|не соответствует|подпись недействит/.test(m)) return 'invalid';
   return 'error';
 }
@@ -747,34 +748,48 @@ async function runOneSigVerify(contentBytes, sigBytes){
     rawErr=new Error('Метод проверки подписи не поддерживается плагином');
   }
 
-  // КриптоПро может заполнить Signers даже при ошибке истёкшего сертификата
+  // КриптоПро может заполнить Signers даже при ошибке истёкшего сертификата.
+  // При 'chain' (CRYPT_E_NO_SIGNER) пробуем ещё раз с CADESCOM_CADES_DEFAULT (0)
+  // без проверки цепочки — чтобы хотя бы прочитать данные подписанта.
+  const CADESCOM_CADES_DEFAULT = 0;
   let signer=null;
-  try{
-    if(oSD){
-      const signers=await oSD.Signers;
-      const cnt=await signers.Count;
-      if(cnt>0){
-        const s=await signers.Item(1);
-        const cert=await s.Certificate;
-        const subj=await cert.SubjectName;
-        let issuer='';
-        try{ const isn=await cert.IssuerName; issuer=(isn.match(/CN=([^,]+)/)||[])[1]||''; }catch(_){}
-        let signingTime=null;
-        try{ const t=await s.SigningTime; if(t) signingTime=new Date(t); }catch(_){}
-        const certFrom=new Date(await cert.ValidFromDate);
-        const certTo=new Date(await cert.ValidToDate);
-        signer={
-          name:(subj.match(/CN=([^,]+)/)||[])[1]||subj,
-          serial:await cert.SerialNumber,
-          from:certFrom,
-          to:certTo,
-          issuer,
-          signingTime,
-          validAtSigning: signingTime ? (signingTime>=certFrom && signingTime<=certTo) : null,
-        };
-      }
-    }
-  }catch(_){}
+
+  async function readSigners(oSDsrc){
+    const signers=await oSDsrc.Signers;
+    const cnt=await signers.Count;
+    if(cnt<1) return null;
+    const s=await signers.Item(1);
+    const cert=await s.Certificate;
+    const subj=await cert.SubjectName;
+    let issuer='';
+    try{ const isn=await cert.IssuerName; issuer=(isn.match(/CN=([^,]+)/)||[])[1]||''; }catch(_){}
+    let signingTime=null;
+    try{ const t=await s.SigningTime; if(t) signingTime=new Date(t); }catch(_){}
+    const certFrom=new Date(await cert.ValidFromDate);
+    const certTo=new Date(await cert.ValidToDate);
+    return {
+      name:(subj.match(/CN=([^,]+)/)||[])[1]||subj,
+      serial:await cert.SerialNumber,
+      from:certFrom, to:certTo, issuer, signingTime,
+      validAtSigning: signingTime ? (signingTime>=certFrom && signingTime<=certTo) : null,
+    };
+  }
+
+  try{ if(oSD) signer=await readSigners(oSD); }catch(_){}
+
+  if(!signer && kind==='chain'){
+    log('[dbg] пробую читать подписанта через CADESCOM_CADES_DEFAULT…','dim');
+    try{
+      const oSD2=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
+      await oSD2.propset_ContentEncoding(CADESCOM_BASE64_TO_BINARY);
+      await oSD2.propset_Content(contentB64);
+      try{ await oSD2.VerifyCades(sigB64, CADESCOM_CADES_DEFAULT, true); }catch(_){}
+      signer=await readSigners(oSD2);
+    }catch(_){}
+    // если нашли подписанта — скорее всего причина в просроченном сертификате
+    if(signer) kind='expired';
+  }
+
   return {ok,kind,rawErr,signer,sigMethod};
 }
 
