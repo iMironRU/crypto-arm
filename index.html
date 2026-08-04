@@ -836,7 +836,16 @@ async function sha256hex(bytes){
 // Минимальный DER/BER парсер — извлекает данные подписанта из CMS-структуры подписи.
 // Используется как fallback когда КриптоПро отказывает из-за недоступной цепочки сертификатов.
 function extractCMSSignerInfo(raw){
-  const d=raw instanceof Uint8Array?raw:new Uint8Array(raw);
+  let d=raw instanceof Uint8Array?raw:new Uint8Array(raw);
+  // .sig-файл может хранится на диске как base64-текст (а не бинарный DER).
+  // Если первый байт не 0x30 (SEQUENCE) — декодируем из base64.
+  if(d.length>0&&d[0]!==0x30){
+    try{
+      const text=new TextDecoder().decode(d).replace(/-----[^\n]+\n?/g,'').replace(/\s/g,'');
+      d=b64ToU8(text);
+    }catch(_){ return null; }
+    if(!d||d[0]!==0x30) return null;
+  }
   const rlen=i=>{
     if(d[i]<0x80) return{len:d[i],skip:1};
     const nb=d[i]&0x7f; let len=0;
