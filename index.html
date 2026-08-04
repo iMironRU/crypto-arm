@@ -754,6 +754,22 @@ async function runOneSigVerify(contentBytes, sigBytes){
   const CADESCOM_CADES_DEFAULT = 0;
   let signer=null;
 
+  function parseSubject(dn){
+    // разбираем DN вида "CN=Имя, O=Орг, T=Должность, L=Город, ..."
+    const get=(key)=>{
+      const re=new RegExp('(?:^|,\\s*)'+key+'=([^,]+)','i');
+      return (dn.match(re)||[])[1]?.trim()||'';
+    };
+    return {
+      cn:   get('CN'),
+      org:  get('O'),
+      unit: get('OU'),
+      pos:  get('T'),
+      city: get('L'),
+      email:get('E')||get('EMAILADDRESS'),
+    };
+  }
+
   async function readSigners(oSDsrc){
     const signers=await oSDsrc.Signers;
     const cnt=await signers.Count;
@@ -761,6 +777,7 @@ async function runOneSigVerify(contentBytes, sigBytes){
     const s=await signers.Item(1);
     const cert=await s.Certificate;
     const subj=await cert.SubjectName;
+    const subjParsed=parseSubject(subj);
     let issuer='';
     try{ const isn=await cert.IssuerName; issuer=(isn.match(/CN=([^,]+)/)||[])[1]||''; }catch(_){}
     let signingTime=null;
@@ -768,7 +785,11 @@ async function runOneSigVerify(contentBytes, sigBytes){
     const certFrom=new Date(await cert.ValidFromDate);
     const certTo=new Date(await cert.ValidToDate);
     return {
-      name:(subj.match(/CN=([^,]+)/)||[])[1]||subj,
+      name: subjParsed.cn||subj,
+      org:  subjParsed.org,
+      pos:  subjParsed.pos,
+      city: subjParsed.city,
+      email:subjParsed.email,
       serial:await cert.SerialNumber,
       from:certFrom, to:certTo, issuer, signingTime,
       validAtSigning: signingTime ? (signingTime>=certFrom && signingTime<=certTo) : null,
@@ -889,16 +910,21 @@ async function buildProtocolPdf(rows, meta){
     const status=r.ok?'ДЕЙСТВИТЕЛЬНА':r.kind==='expired'?'СЕРТИФИКАТ ИСТЁК (математически верна)':'НЕДЕЙСТВИТЕЛЬНА';
     put(`Подпись ${i+1}:  ${status}`,11,col); gap(3);
     if(r.signer){
-      trow('Подписант', r.signer.name);
-      trow('Серийный №', (r.signer.serial||'').toUpperCase().match(/.{1,4}/g)?.join(' ')||'—', 8, 8, muted);
+      const sg=r.signer;
+      trow('ФИО / CN', sg.name);
+      if(sg.org)   trow('Организация',  sg.org);
+      if(sg.pos)   trow('Должность',    sg.pos);
+      if(sg.city)  trow('Город',        sg.city);
+      if(sg.email) trow('Email',        sg.email, 8, 8, muted);
+      trow('Серийный №', (sg.serial||'').toUpperCase().match(/.{1,4}/g)?.join(' ')||'—', 8, 8, muted);
       trow('Срок действия',
-        `${r.signer.from.toLocaleDateString('ru-RU')} — ${r.signer.to.toLocaleDateString('ru-RU')}`,
+        `${sg.from.toLocaleDateString('ru-RU')} — ${sg.to.toLocaleDateString('ru-RU')}`,
         8, 9, r.kind==='expired'?amber:ink);
-      if(r.signer.issuer) trow('Издатель', r.signer.issuer, 8, 8, muted);
-      if(r.signer.signingTime){
-        trow('Время подписания', fmtDt(r.signer.signingTime));
+      if(sg.issuer) trow('Издатель', sg.issuer, 8, 8, muted);
+      if(sg.signingTime){
+        trow('Время подписания', fmtDt(sg.signingTime));
         if(r.kind==='expired'){
-          const vas=r.signer.validAtSigning;
+          const vas=sg.validAtSigning;
           trow('Серт. на момент подписания',
             vas===true ? 'Сертификат был действителен' :
             vas===false? 'Сертификат уже не действовал' : 'Не удалось определить',
@@ -1024,27 +1050,35 @@ function buildVerifyCard(res, label, lr){
   const ok=res.ok, exp=res.kind==='expired';
   const statusCls=ok?'ok':exp?'warn':'err';
   const statusText=ok?'Подпись действительна':exp?'Сертификат истёк — математически верна':'Подпись недействительна';
-  const nm=res.signer?res.signer.name:'неизвестен';
-  const serial=res.signer?((res.signer.serial||'').toUpperCase().match(/.{1,4}/g)||[]).join(' '):'—';
-  const from=res.signer?res.signer.from.toLocaleDateString('ru-RU'):'—';
-  const to=res.signer?res.signer.to.toLocaleDateString('ru-RU'):'—';
-  const issuer=res.signer&&res.signer.issuer?res.signer.issuer:'—';
-  const signingTime=res.signer?.signingTime;
-  const vas=res.signer?.validAtSigning;
-  const signingTimeRow=signingTime?`<div class="protoRow"><span class="protoLbl">Время подписания</span><span>${signingTime.toLocaleString('ru-RU')}</span></div>`:'';
-  const vasRow=exp&&signingTime?`<div class="protoRow"><span class="protoLbl">Серт. при подписании</span><span class="${vas===true?'ok':vas===false?'err':'warn'}">${vas===true?'Был действителен':vas===false?'Уже не действовал':'Не удалось определить'}</span></div>`:'';
-  const errLine=!ok&&!exp&&res.rawErr?`<div class="protoRow protoErr"><span class="protoLbl">Ошибка</span><span>${errText(res.rawErr).slice(0,200)}</span></div>`:'';
+  const s=res.signer;
+  const nm=s?s.name:'неизвестен';
+  const serial=s?((s.serial||'').toUpperCase().match(/.{1,4}/g)||[]).join(' '):'—';
+  const from=s?s.from.toLocaleDateString('ru-RU'):'—';
+  const to=s?s.to.toLocaleDateString('ru-RU'):'—';
+  const issuer=s?.issuer||'—';
+  const signingTime=s?.signingTime;
+  const vas=s?.validAtSigning;
+  const row=(lbl,val,cls='')=>val?`<div class="protoRow"><span class="protoLbl">${lbl}</span><span${cls?' class="'+cls+'"':''}>${val}</span></div>`:'';
+  const signingTimeRow=signingTime?row('Время подписания',signingTime.toLocaleString('ru-RU')):'';
+  const vasRow=exp&&signingTime?row('Серт. при подписании',
+    vas===true?'Был действителен':vas===false?'Уже не действовал':'Не удалось определить',
+    vas===true?'ok':vas===false?'err':'warn'):'';
+  const errLine=!ok&&!exp&&res.rawErr?row('Ошибка',errText(res.rawErr).slice(0,200),'err'):'';
   const warnLine=exp&&vas!==true?`<div class="protoWarn">Для признания подписи юридически значимой необходима проверка метки времени (TSP).</div>`:'';
   return `<div class="protoCard ${statusCls}">
     <div class="protoStatus ${statusCls}">${statusText}</div>
     <div class="protoLabel">${label}</div>
     <div class="protoGrid">
-      <div class="protoRow"><span class="protoLbl">Подписант</span><span>${nm}</span></div>
-      <div class="protoRow"><span class="protoLbl">Серийный №</span><span class="mono">${serial}</span></div>
+      ${row('ФИО / CN',nm)}
+      ${row('Организация',s?.org)}
+      ${row('Должность',s?.pos)}
+      ${row('Город',s?.city)}
+      ${row('Email',s?.email)}
+      ${row('Серийный №',`<span class="mono">${serial}</span>`)}
       <div class="protoRow"><span class="protoLbl">Срок действия</span><span${exp?' class="warn"':''}>${from} — ${to}</span></div>
       ${signingTimeRow}${vasRow}
-      <div class="protoRow"><span class="protoLbl">Издатель</span><span>${issuer}</span></div>
-      <div class="protoRow"><span class="protoLbl">Метод</span><span>КриптоПро ЭЦП · CAdES-BES · ${res.sigMethod||'—'}</span></div>
+      ${row('Издатель',issuer)}
+      ${row('Метод','КриптоПро ЭЦП · CAdES-BES · '+(res.sigMethod||'—'))}
       ${errLine}
     </div>
     ${warnLine}
