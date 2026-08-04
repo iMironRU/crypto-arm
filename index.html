@@ -696,13 +696,20 @@ async function runOneSigVerify(contentBytes, sigBytes){
   let ok=false, kind=null, rawErr=null, oSD=null;
   log(`[dbg] контент ${contentBytes.length} байт, подпись ${sigBytes.length} байт`,'dim');
 
-  for(const method of ['VerifyDetachedAsync','VerifyDetached']){
+  // VerifyCades(sig, type, bDetached) — официальный метод async API КриптоПро.
+  // Старые имена VerifyDetachedAsync/VerifyDetached оставлены как запасной вариант.
+  const VERIFY_ATTEMPTS = [
+    ['VerifyCades',          [sigB64, CADESCOM_CADES_BES, true]],
+    ['VerifyDetachedAsync',  [sigB64, CADESCOM_CADES_BES]],
+    ['VerifyDetached',       [sigB64, CADESCOM_CADES_BES]],
+  ];
+  for(const [method, args] of VERIFY_ATTEMPTS){
     try{
       log(`[dbg] пробую ${method}…`,'dim');
       oSD=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
       await oSD.propset_ContentEncoding(CADESCOM_BASE64_TO_BINARY);
       await oSD.propset_Content(contentB64);
-      await oSD[method](sigB64,CADESCOM_CADES_BES);
+      await oSD[method](...args);
       log(`[dbg] ${method} — успех`,'dim');
       ok=true; break;
     }catch(e){
