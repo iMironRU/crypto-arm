@@ -11,6 +11,7 @@
   <script src="cadesplugin_api.js"></script>
 -->
 <script src="https://www.cryptopro.ru/sites/default/files/products/cades/cadesplugin_api.js"></script>
+<script src="gost/gost-crypto.min.js"></script>
 
 <style>
   :root{
@@ -815,15 +816,27 @@ async function runOneSigVerify(contentBytes, sigBytes){
     if(signer){ kind='expired'; }
 
     // Шаг 2: если плагин не смог ничего проверить — разбираем CMS-структуру напрямую из байт.
-    // ВАЖНО: в этом случае математическая проверка подписи НЕ выполнялась.
-    // kind остаётся 'chain', чтобы UI явно показывал что соответствие документу не подтверждено.
     if(!signer){
       log('[dbg] пробую ASN.1-разбор подписи…','dim');
       try{
         signer=extractCMSSignerInfo(sigBytes);
         log('[dbg] ASN.1: '+(signer?signer.name:'(null)'),'dim');
       }catch(ep){ log('[dbg] ASN.1 → '+errText(ep),'dim'); }
-      // kind='chain' сохраняется — математика не проверена
+    }
+
+    // Шаг 3: математическая проверка через gost-crypto (ГОСТ Р 34.10/34.11-2012).
+    // Даёт достоверный ответ даже без цепочки сертификатов.
+    if(signer){
+      try{
+        log('[dbg] запускаю ГОСТ-математику…','dim');
+        const gm=verifyGOSTMath(contentBytes,sigBytes);
+        if(gm&&gm.ok){
+          kind='expired'; // математически верна, cert chain не проверен
+        } else if(gm&&gm.reason==='wrongDocument'){
+          kind='wrongDoc';
+        }
+        // unsupported / invalidSig / null → kind='chain'
+      }catch(eg){ log('[dbg] gost-math → '+errText(eg),'dim'); }
     }
   }
 
@@ -918,6 +931,79 @@ function extractCMSSignerInfo(raw){
     signingTime,
     validAtSigning: signingTime?(signingTime>=from&&signingTime<=to):null,
   };
+}
+
+// Математическая проверка ГОСТ Р 34.10-2012 / 34.11-2012 через библиотеку gost-crypto.
+// Возвращает: {ok:true} | {ok:false, reason:'wrongDocument'|'invalidSig'|'unsupported'} | null (ошибка парсинга / библиотека не загружена)
+function verifyGOSTMath(contentBytes, sigBytes){
+  if(typeof GostEngine==='undefined') return null;
+  let d=sigBytes instanceof Uint8Array?sigBytes:new Uint8Array(sigBytes);
+  if(d.length>0&&d[0]!==0x30){
+    try{ const t=new TextDecoder().decode(d).replace(/-----[^\n]+\n?/g,'').replace(/\s/g,''); d=b64ToU8(t); }
+    catch(_){ return null; }
+    if(!d||d[0]!==0x30) return null;
+  }
+  try{
+    const rlen=i=>{if(d[i]<0x80)return{len:d[i],skip:1};const nb=d[i]&0x7f;let l=0;for(let j=1;j<=nb;j++)l=(l<<8)|d[i+j];return{len:l,skip:1+nb};};
+    const tlv=i=>{const{len,skip}=rlen(i+1);return{tag:d[i],len,voff:i+1+skip,end:i+1+skip+len};};
+    const oidStr=t=>{let v=0,f=true,p=[];for(let i=t.voff;i<t.end;i++){v=(v<<7)|(d[i]&0x7f);if(!(d[i]&0x80)){f?(p.push(Math.floor(v/40),v%40),f=false):p.push(v);v=0;}}return p.join('.');};
+    // ContentInfo → [0] → SignedData
+    const ci=tlv(0),ctOid=tlv(ci.voff),ctx=tlv(ctOid.end),sd=tlv(ctx.voff);
+    let p=sd.voff;
+    p=tlv(p).end;p=tlv(p).end;p=tlv(p).end; // version, digestAlgorithms, encapContentInfo
+    if(p>=sd.end||(d[p]&0xe0)!==0xa0) return null;
+    // certificates [0] → first cert → public key
+    const certsCtx=tlv(p);p=certsCtx.end;
+    const tbs=tlv(tlv(certsCtx.voff).voff);
+    let q=tbs.voff;
+    if((d[q]&0xe0)===0xa0)q=tlv(q).end;
+    q=tlv(q).end;q=tlv(q).end;q=tlv(q).end;q=tlv(q).end;q=tlv(q).end; // sn, sigAlg, issuer, validity, subject
+    const spki=tlv(q);let sp=spki.voff;
+    const algOidT=tlv(tlv(sp).voff);
+    const signAlgOid=oidStr(algOidT);
+    // Only GOST R 34.10-2012 256-bit is supported
+    if(signAlgOid!=='1.2.643.7.1.1.1.1'){ log('[gost] алгоритм '+signAlgOid+' — нет поддержки','dim'); return{ok:false,reason:'unsupported'}; }
+    sp=tlv(sp).end;
+    const pkOct=tlv(tlv(sp).voff+1); // BIT STRING: skip unused-bits byte, then OCTET STRING
+    const pubKey=new Uint8Array(d.slice(pkOct.voff,pkOct.end));
+    if(pubKey.length!==64) return null;
+    // skip crls [1]
+    let sip=p;
+    if(sip<sd.end&&(d[sip]&0xe0)===0xa0&&(d[sip]&0x1f)===1)sip=tlv(sip).end;
+    if(sip>=sd.end) return null;
+    const siT=tlv(tlv(sip).voff);
+    let spp=siT.voff;
+    spp=tlv(spp).end;spp=tlv(spp).end;spp=tlv(spp).end; // version, sid, digestAlg
+    if(spp>=siT.end||(d[spp]&0xff)!==0xa0) return null;
+    // signedAttrs
+    const saStart=spp,saT=tlv(spp);spp=saT.end;
+    const saRaw=d.slice(saStart,saT.end);
+    const saForHash=new Uint8Array(saRaw.length);
+    saForHash.set(saRaw);saForHash[0]=0x31; // [0] implicit → SET
+    // extract messageDigest
+    let msgDigest=null;
+    for(let ap=saT.voff;ap<saT.end;){const at=tlv(ap);ap=at.end;const aot=tlv(at.voff);if(oidStr(aot)==='1.2.840.113549.1.9.4'){const vo=tlv(tlv(aot.end).voff);msgDigest=d.slice(vo.voff,vo.end);break;}}
+    if(!msgDigest) return null;
+    spp=tlv(spp).end; // signatureAlgorithm
+    const svT=tlv(spp);
+    const sigValue=new Uint8Array(d.slice(svT.voff,svT.end));
+    if(sigValue.length!==64) return null;
+    // Streebog-256 of content
+    const H=GostEngine.getGostDigest({name:'GOST R 34.11',version:2012,length:256});
+    const cu8=contentBytes instanceof Uint8Array?contentBytes:new Uint8Array(contentBytes);
+    const cHash=new Uint8Array(H.digest(cu8.buffer));
+    if(cHash.length!==msgDigest.length||!cHash.every((b,i)=>b===msgDigest[i])){
+      log('[gost] хэш документа ≠ messageDigest → неверный документ','err');
+      return{ok:false,reason:'wrongDocument'};
+    }
+    // Streebog-256 of signedAttrs
+    const saHash=new Uint8Array(H.digest(saForHash.buffer));
+    // GOST R 34.10-2012 verify (CryptoPro-A = S-256-A)
+    const SE=GostEngine.getGostSign({name:'GOST R 34.10',version:2012,namedCurve:'S-256-A',procreator:'CP'});
+    const valid=SE.verify(pubKey.buffer,sigValue.buffer,saHash.buffer);
+    log('[gost] математика: '+(valid?'✓ ВЕРНА':'✗ НЕВЕРНА'),valid?'ok':'err');
+    return{ok:valid,reason:valid?null:'invalidSig'};
+  }catch(e){ log('[gost] ошибка: '+e.message,'dim'); return null; }
 }
 
 async function buildProtocolPdf(rows, meta){
@@ -1149,12 +1235,13 @@ async function getPluginVersion(){
 
 function buildVerifyCard(res, label, lr){
   const ok=res.ok, exp=res.kind==='expired';
-  // chain + signer: плагин не смог проверить математику, данные получены из ASN.1
   const chainWithCert=!ok&&!exp&&res.kind==='chain'&&!!res.signer;
+  const wrongDoc=!ok&&!exp&&res.kind==='wrongDoc';
   const statusCls=ok?'ok':(exp||chainWithCert)?'warn':'err';
   const statusText=ok?'Подпись действительна'
     :exp?'Сертификат истёк — математически верна'
     :chainWithCert?'Математическая проверка невозможна'
+    :wrongDoc?'НЕВЕРНЫЙ ДОКУМЕНТ'
     :'Подпись недействительна';
   const s=res.signer;
   const nm=s?s.name:'неизвестен';
@@ -1169,9 +1256,10 @@ function buildVerifyCard(res, label, lr){
   const vasRow=(exp||chainWithCert)&&signingTime?row('Серт. при подписании',
     vas===true?'Был действителен':vas===false?'Уже не действовал':'Не удалось определить',
     vas===true?'ok':vas===false?'err':'warn'):'';
-  const errLine=!ok&&!exp&&!chainWithCert&&res.rawErr?row('Ошибка',errText(res.rawErr).slice(0,200),'err'):'';
+  const errLine=!ok&&!exp&&!chainWithCert&&!wrongDoc&&res.rawErr?row('Ошибка',errText(res.rawErr).slice(0,200),'err'):'';
   const warnLine=exp&&vas!==true?`<div class="protoWarn">Для признания подписи юридически значимой необходима проверка метки времени (TSP).</div>`:'';
   const chainWarn=chainWithCert?`<div class="protoWarn">КриптоПро не смог проверить подпись — недоступна цепочка сертификатов (сертификат истёк или нет доступа к CRL/OCSP). Данные подписанта извлечены из файла подписи, но <strong>соответствие этому документу не подтверждено</strong>.</div>`:'';
+  const wrongDocWarn=wrongDoc?`<div class="protoWarn" style="background:var(--warn-soft);border-left:3px solid var(--warn)"><strong>Подпись не соответствует загруженному файлу.</strong> Вероятно, был загружен другой документ или файл подписи был создан для иного документа.</div>`:'';
   return `<div class="protoCard ${statusCls}">
     <div class="protoStatus ${statusCls}">${statusText}</div>
     <div class="protoLabel">${label}</div>
@@ -1188,7 +1276,7 @@ function buildVerifyCard(res, label, lr){
       ${row('Метод','КриптоПро ЭЦП · CAdES-BES · '+(res.sigMethod||'—'))}
       ${errLine}
     </div>
-    ${warnLine}${chainWarn}
+    ${warnLine}${chainWarn}${wrongDocWarn}
     <button class="ghost protoZipBtn" style="margin-top:10px;padding:5px 14px;font-size:12px">Скачать протокол ZIP</button>
   </div>`;
 }
@@ -1215,7 +1303,8 @@ async function verifyDetachedPair(docObj, sigObj){
   item.querySelector('.protoZipBtn').onclick=()=>downloadProtocolZip(lr);
   $('clearDetached').hidden=false;
   const _chainCert=!res.ok&&res.kind==='chain'&&!!res.signer;
-  log(`Откр. подпись «${docObj.name}»: `+(res.ok?'✓ действительна':res.kind==='expired'?'⚠ серт. истёк':_chainCert?'⚠ не проверена (цепочка недоступна)':'✗ недействит.'), res.ok?'ok':(res.kind==='expired'||_chainCert)?'warn':'err');
+  const _wrongDoc=res.kind==='wrongDoc';
+  log(`Откр. подпись «${docObj.name}»: `+(res.ok?'✓ действительна':res.kind==='expired'?'⚠ серт. истёк':_wrongDoc?'✗ неверный документ':_chainCert?'⚠ не проверена (цепочка недоступна)':'✗ недействит.'), res.ok?'ok':(res.kind==='expired'||_chainCert)?'warn':'err');
 }
 
 // ---------- инкрементальная подпись ----------
