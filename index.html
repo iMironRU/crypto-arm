@@ -683,31 +683,78 @@ function classifyVerifyErr(e){
   return 'error';
 }
 
+// Алгоритмы хеша для перебора при VerifyHash
+const GOST_HASH_ALGS = [
+  'CADESCOM_HASH_ALGORITHM_CP_GOST_3411_2012_256',
+  'CADESCOM_HASH_ALGORITHM_CP_GOST_3411_2012_512',
+  'CADESCOM_HASH_ALGORITHM_CP_GOST_3411',
+];
+
 async function runOneSigVerify(contentBytes, sigBytes){
   const cp=window.cadesplugin;
-  const oSD=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
-  await oSD.propset_ContentEncoding(CADESCOM_BASE64_TO_BINARY);
-  await oSD.propset_Content(u8ToBase64(contentBytes));
-  let ok=false, kind=null, rawErr=null;
+  const contentB64=u8ToBase64(contentBytes);
+  const sigB64=u8ToBase64(sigBytes);
+  let ok=false, kind=null, rawErr=null, oSD=null;
+
+  // Метод 1: VerifyDetachedAsync (не все версии плагина поддерживают)
   try{
-    await oSD.VerifyDetachedAsync(u8ToBase64(sigBytes),CADESCOM_CADES_BES);
+    oSD=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
+    await oSD.propset_ContentEncoding(CADESCOM_BASE64_TO_BINARY);
+    await oSD.propset_Content(contentB64);
+    await oSD.VerifyDetachedAsync(sigB64,CADESCOM_CADES_BES);
     ok=true;
-  }catch(e){ rawErr=e; kind=classifyVerifyErr(e); }
+  }catch(e){
+    const msg=errText(e);
+    // Если метод не существует — пробуем VerifyHash
+    if(/is not a function|не является функцией/i.test(msg)){
+      oSD=null; // сбросим — создадим заново под VerifyHash
+    }else{
+      rawErr=e; kind=classifyVerifyErr(e);
+    }
+  }
+
+  // Метод 2: VerifyHash с перебором алгоритмов (как SignHash при подписании)
+  if(!ok && !rawErr){
+    for(const algName of GOST_HASH_ALGS){
+      const algConst=cp[algName];
+      if(algConst===undefined) continue;
+      try{
+        oSD=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
+        const oH=await cp.CreateObjectAsync('CAdESCOM.HashedData');
+        await oH.propset_Algorithm(algConst);
+        await oH.propset_DataEncoding(CADESCOM_BASE64_TO_BINARY);
+        await oH.Hash(contentB64);
+        await oSD.VerifyHash(oH,sigB64,CADESCOM_CADES_BES);
+        ok=true; break;
+      }catch(e){
+        rawErr=e;
+        kind=classifyVerifyErr(e);
+        // Истёкший серт или неверная подпись — останавливаемся, алгоритм нашли
+        if(kind==='expired'||kind==='invalid') break;
+        // Иначе — скорее всего неверный алгоритм, пробуем следующий
+        kind=null; rawErr=null;
+      }
+    }
+    if(!ok && !rawErr){ kind='error'; rawErr=new Error('Не удалось подобрать алгоритм хеша'); }
+  }
+
   // КриптоПро может заполнить Signers даже при ошибке истёкшего сертификата
   let signer=null;
   try{
-    const signers=await oSD.Signers;
-    const cnt=await signers.Count;
-    if(cnt>0){
-      const s=await signers.Item(1);
-      const cert=await s.Certificate;
-      const subj=await cert.SubjectName;
-      signer={
-        name:(subj.match(/CN=([^,]+)/)||[])[1]||subj,
-        serial:await cert.SerialNumber,
-        from:new Date(await cert.ValidFromDate),
-        to:new Date(await cert.ValidToDate),
-      };
+    if(oSD){
+      const signers=await oSD.Signers;
+      const cnt=await signers.Count;
+      if(cnt>0){
+        const s=await signers.Item(1);
+        const cert=await s.Certificate;
+        const subj=await cert.SubjectName;
+        signer={
+          name:(subj.match(/CN=([^,]+)/)||[])[1]||subj,
+          serial:await cert.SerialNumber,
+          from:new Date(await cert.ValidFromDate),
+          to:new Date(await cert.ValidToDate),
+        };
+      }
     }
   }catch(_){}
   return {ok,kind,rawErr,signer};
