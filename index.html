@@ -799,36 +799,26 @@ async function runOneSigVerify(contentBytes, sigBytes){
   try{ if(oSD) signer=await readSigners(oSD); }catch(e){ log('[dbg] readSigners(oSD) → '+errText(e),'dim'); }
 
   if(!signer && kind==='chain'){
-    log('[dbg] пробую читать подписанта через CADESCOM_CADES_DEFAULT…','dim');
-    try{
-      const oSD2=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
-      await oSD2.propset_ContentEncoding(CADESCOM_BASE64_TO_BINARY);
-      await oSD2.propset_Content(contentB64);
+    // Шаг 1: пробуем CADESCOM_CADES_DEFAULT на том же oSD (контент уже установлен, новый объект не нужен)
+    log('[dbg] пробую VerifyCades(DEFAULT) на существующем oSD…','dim');
+    if(oSD){
       try{
-        await oSD2.VerifyCades(sigB64, CADESCOM_CADES_DEFAULT, true);
-        log('[dbg] CADES_DEFAULT — успех','dim');
-      }catch(e2){ log('[dbg] CADES_DEFAULT → '+errText(e2),'dim'); }
+        await oSD.VerifyCades(sigB64, CADESCOM_CADES_DEFAULT, true);
+        log('[dbg] VerifyCades(DEFAULT) — успех','dim');
+      }catch(e2){ log('[dbg] VerifyCades(DEFAULT) → '+errText(e2),'dim'); }
       try{
-        signer=await readSigners(oSD2);
-        log('[dbg] readSigners(oSD2): '+(signer?signer.name:'null'),'dim');
-      }catch(e3){ log('[dbg] readSigners(oSD2) → '+errText(e3),'dim'); }
-    }catch(e4){ log('[dbg] create oSD2 → '+errText(e4),'dim'); }
+        signer=await readSigners(oSD);
+        log('[dbg] readSigners после DEFAULT: '+(signer?signer.name:'null'),'dim');
+      }catch(e3){ log('[dbg] readSigners(DEFAULT) → '+errText(e3),'dim'); }
+    }
 
-    // Если DEFAULT тоже не дал подписанта — пробуем читать signers без вызова Verify
+    // Шаг 2: если плагин не помог — разбираем CMS-структуру напрямую из байт подписи
     if(!signer){
-      log('[dbg] пробую читать signers без верификации…','dim');
+      log('[dbg] пробую ASN.1-разбор подписи…','dim');
       try{
-        const oSD3=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
-        // Подаём подпись как «встроенную» — без флага bDetached, без content
-        // Это позволяет плагину распарсить CMS-структуру без проверки хеша
-        try{ await oSD3.VerifyCades(sigB64, CADESCOM_CADES_DEFAULT); }catch(e5){
-          log('[dbg] VerifyCades(sig, DEFAULT, no-detached) → '+errText(e5),'dim');
-        }
-        try{
-          signer=await readSigners(oSD3);
-          log('[dbg] readSigners(oSD3 no-detached): '+(signer?signer.name:'null'),'dim');
-        }catch(e6){ log('[dbg] readSigners(oSD3) → '+errText(e6),'dim'); }
-      }catch(_){}
+        signer=extractCMSSignerInfo(sigBytes);
+        log('[dbg] ASN.1: '+(signer?signer.name:'(null)'),'dim');
+      }catch(ep){ log('[dbg] ASN.1 → '+errText(ep),'dim'); }
     }
 
     // если нашли подписанта — скорее всего причина в просроченном сертификате
@@ -841,6 +831,82 @@ async function runOneSigVerify(contentBytes, sigBytes){
 async function sha256hex(bytes){
   const buf=await crypto.subtle.digest('SHA-256',bytes);
   return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// Минимальный DER/BER парсер — извлекает данные подписанта из CMS-структуры подписи.
+// Используется как fallback когда КриптоПро отказывает из-за недоступной цепочки сертификатов.
+function extractCMSSignerInfo(raw){
+  const d=raw instanceof Uint8Array?raw:new Uint8Array(raw);
+  const rlen=i=>{
+    if(d[i]<0x80) return{len:d[i],skip:1};
+    const nb=d[i]&0x7f; let len=0;
+    for(let j=1;j<=nb;j++) len=(len<<8)|d[i+j];
+    return{len,skip:1+nb};
+  };
+  const tlv=i=>{const{len,skip}=rlen(i+1);return{tag:d[i],len,voff:i+1+skip,end:i+1+skip+len};};
+  const str=t=>{
+    if(t.tag===0x1e){const a=d.slice(t.voff,t.end);return Array.from({length:a.length>>1},(_,i)=>String.fromCharCode((a[i*2]<<8)|a[i*2+1])).join('');}
+    return new TextDecoder().decode(d.slice(t.voff,t.end));
+  };
+  const oid=t=>{let v=0,first=true,p=[];for(let i=t.voff;i<t.end;i++){v=(v<<7)|(d[i]&0x7f);if(!(d[i]&0x80)){first?(p.push(Math.floor(v/40),v%40),first=false):p.push(v);v=0;}}return p.join('.');};
+  const time=t=>{
+    const s=new TextDecoder().decode(d.slice(t.voff,t.end));
+    let y,mo,day,h,m,sec=0;
+    if(t.tag===0x17){y=+s.slice(0,2);y+=y<50?2000:1900;mo=+s.slice(2,4)-1;day=+s.slice(4,6);h=+s.slice(6,8);m=+s.slice(8,10);}
+    else{y=+s.slice(0,4);mo=+s.slice(4,6)-1;day=+s.slice(6,8);h=+s.slice(8,10);m=+s.slice(10,12);if(s.length>12)sec=+s.slice(12,14);}
+    return new Date(Date.UTC(y,mo,day,h,m,sec));
+  };
+  const dn=seqT=>{const out={};let i=seqT.voff;while(i<seqT.end){const rdn=tlv(i);i=rdn.end;for(let j=rdn.voff;j<rdn.end;){const atv=tlv(j);j=atv.end;const ot=tlv(atv.voff),vt=tlv(ot.end);out[oid(ot)]=str(vt);}}return out;};
+  const g=(obj,...keys)=>{for(const k of keys)if(obj[k])return obj[k];return'';};
+
+  // ContentInfo → [0] → SignedData
+  const ci=tlv(0), ctOid=tlv(ci.voff), ctx=tlv(ctOid.end), sd=tlv(ctx.voff);
+  let p=sd.voff;
+  p=tlv(p).end; // version
+  p=tlv(p).end; // digestAlgorithms
+  p=tlv(p).end; // encapContentInfo
+
+  // certificates [0]
+  if(p>=sd.end||(d[p]&0xe0)!==0xa0) return null;
+  const certsCtx=tlv(p); p=certsCtx.end;
+  const cert=tlv(certsCtx.voff), tbs=tlv(cert.voff);
+  let q=tbs.voff;
+  if((d[q]&0xe0)===0xa0) q=tlv(q).end; // version [0]
+
+  const snT=tlv(q); q=snT.end;
+  const serial=[...d.slice(snT.voff+(d[snT.voff]===0?1:0),snT.end)].map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase();
+  q=tlv(q).end; // signatureAlgorithm
+  const issuerT=tlv(q); q=issuerT.end; const issuerDN=dn(issuerT);
+  const validT=tlv(q); q=validT.end;
+  const nbT=tlv(validT.voff),naT=tlv(nbT.end);
+  const from=time(nbT),to=time(naT);
+  const subjDN=dn(tlv(q));
+
+  // signingTime из signerInfo signedAttrs
+  let signingTime=null;
+  try{
+    let sip=p;
+    if(sip<sd.end&&(d[sip]&0xe0)===0xa0&&(d[sip]&0x1f)===1) sip=tlv(sip).end; // skip cRLs [1]
+    const siSetT=tlv(sip),siT=tlv(siSetT.voff);
+    let sp=siT.voff;
+    sp=tlv(sp).end; sp=tlv(sp).end; sp=tlv(sp).end; // version, sid, digestAlgorithm
+    if(sp<siT.end&&(d[sp]&0xe0)===0xa0){ // signedAttrs [0]
+      const saT=tlv(sp);
+      for(let ap=saT.voff;ap<saT.end;){const at=tlv(ap);ap=at.end;const aot=tlv(at.voff);if(oid(aot)==='1.2.840.113549.1.9.5'){signingTime=time(tlv(tlv(aot.end).voff));break;}}
+    }
+  }catch(_){}
+
+  return{
+    name:  g(subjDN,'2.5.4.3'),
+    org:   g(subjDN,'2.5.4.10'),
+    pos:   g(subjDN,'2.5.4.12'),
+    city:  g(subjDN,'2.5.4.7'),
+    email: g(subjDN,'1.2.840.113549.1.9.1','1.2.840.113549.1.9.20'),
+    serial, from, to,
+    issuer: g(issuerDN,'2.5.4.3'),
+    signingTime,
+    validAtSigning: signingTime?(signingTime>=from&&signingTime<=to):null,
+  };
 }
 
 async function buildProtocolPdf(rows, meta){
