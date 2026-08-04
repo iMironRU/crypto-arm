@@ -796,7 +796,7 @@ async function runOneSigVerify(contentBytes, sigBytes){
     };
   }
 
-  try{ if(oSD) signer=await readSigners(oSD); }catch(_){}
+  try{ if(oSD) signer=await readSigners(oSD); }catch(e){ log('[dbg] readSigners(oSD) → '+errText(e),'dim'); }
 
   if(!signer && kind==='chain'){
     log('[dbg] пробую читать подписанта через CADESCOM_CADES_DEFAULT…','dim');
@@ -804,9 +804,33 @@ async function runOneSigVerify(contentBytes, sigBytes){
       const oSD2=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
       await oSD2.propset_ContentEncoding(CADESCOM_BASE64_TO_BINARY);
       await oSD2.propset_Content(contentB64);
-      try{ await oSD2.VerifyCades(sigB64, CADESCOM_CADES_DEFAULT, true); }catch(_){}
-      signer=await readSigners(oSD2);
-    }catch(_){}
+      try{
+        await oSD2.VerifyCades(sigB64, CADESCOM_CADES_DEFAULT, true);
+        log('[dbg] CADES_DEFAULT — успех','dim');
+      }catch(e2){ log('[dbg] CADES_DEFAULT → '+errText(e2),'dim'); }
+      try{
+        signer=await readSigners(oSD2);
+        log('[dbg] readSigners(oSD2): '+(signer?signer.name:'null'),'dim');
+      }catch(e3){ log('[dbg] readSigners(oSD2) → '+errText(e3),'dim'); }
+    }catch(e4){ log('[dbg] create oSD2 → '+errText(e4),'dim'); }
+
+    // Если DEFAULT тоже не дал подписанта — пробуем читать signers без вызова Verify
+    if(!signer){
+      log('[dbg] пробую читать signers без верификации…','dim');
+      try{
+        const oSD3=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
+        // Подаём подпись как «встроенную» — без флага bDetached, без content
+        // Это позволяет плагину распарсить CMS-структуру без проверки хеша
+        try{ await oSD3.VerifyCades(sigB64, CADESCOM_CADES_DEFAULT); }catch(e5){
+          log('[dbg] VerifyCades(sig, DEFAULT, no-detached) → '+errText(e5),'dim');
+        }
+        try{
+          signer=await readSigners(oSD3);
+          log('[dbg] readSigners(oSD3 no-detached): '+(signer?signer.name:'null'),'dim');
+        }catch(e6){ log('[dbg] readSigners(oSD3) → '+errText(e6),'dim'); }
+      }catch(_){}
+    }
+
     // если нашли подписанта — скорее всего причина в просроченном сертификате
     if(signer) kind='expired';
   }
