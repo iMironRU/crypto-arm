@@ -159,6 +159,18 @@
     background:var(--ink);color:#fff;padding:10px 14px;border-radius:var(--radius-sm);font-size:13px;
     display:flex;gap:10px;align-items:center;box-shadow:0 12px 32px -8px rgba(20,20,15,.35)}
   .updateBanner button{padding:6px 12px;font-size:12.5px;background:var(--seal);border-color:var(--seal)}
+  .tabs{display:flex;gap:4px;margin-bottom:16px}
+  .tab{flex:1;padding:10px 16px;border:1px solid var(--line);background:var(--surface);
+    border-radius:var(--radius-sm);font-size:14px;font-weight:600;color:var(--muted);
+    cursor:pointer;transition:all .15s;text-align:center}
+  .tab:hover{color:var(--ink);border-color:var(--seal)}
+  .tab.active{background:var(--seal);border-color:var(--seal);color:#fff}
+  .verifyList{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+  .verifyItem{border:1px solid var(--line);background:var(--field);border-radius:var(--radius-sm);padding:10px 12px}
+  .verifyItem .who{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px}
+  .verifyItem .sigLine{font-size:12.5px;line-height:1.7}
+  .verifyItem .sigLine .ok{color:var(--seal-dark)}.verifyItem .sigLine .warn{color:#7a5000}.verifyItem .sigLine .err{color:var(--warn)}
+  .verifyItem .protoRow{margin-top:8px}
 </style>
 </head>
 <body>
@@ -178,101 +190,122 @@
 
   <div id="env"></div>
 
-  <section>
-    <div class="head"><span>1 · Документ</span><span id="docCount">не выбран</span></div>
-    <div class="body">
-      <label class="file" id="drop">
-        <input type="file" id="pdf" accept="application/pdf" multiple>
-        Выбери до 5 PDF или перетащи сюда
-      </label>
-      <div id="docList" class="docList"></div>
-    </div>
-  </section>
+  <div class="tabs">
+    <button class="tab active" data-tab="sign">Подписание</button>
+    <button class="tab" data-tab="verify">Проверка подписи</button>
+  </div>
 
-  <section>
-    <div class="head"><span>2 · Сертификат</span>
-      <button class="ghost" id="reload" style="padding:5px 12px;font-size:12px">Обновить список</button>
-    </div>
-    <div class="body">
-      <div class="certSelect" id="certSelect">
-        <button type="button" class="certTrigger" id="certTrigger" disabled>
-          <span class="txt" id="certTriggerText">Загрузка хранилища…</span>
-          <svg class="chev" viewBox="0 0 20 20" fill="none"><path d="M5 7.5 10 12.5 15 7.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <div class="certPanel" id="certPanel" hidden>
-          <input type="text" id="certSearch" class="certSearch" placeholder="Поиск по имени или номеру сертификата…">
-          <div class="certList" id="certs"></div>
-          <div class="certPanelFooter">
-            <span id="certSelectedCount" class="note" style="margin:0">0 выбрано</span>
-            <button type="button" class="ghost" id="certDone" style="padding:5px 12px;font-size:12px">Готово</button>
-          </div>
-        </div>
+  <div id="tab-sign">
+    <section>
+      <div class="head"><span>1 · Документ</span><span id="docCount">не выбран</span></div>
+      <div class="body">
+        <label class="file" id="drop">
+          <input type="file" id="pdf" accept="application/pdf" multiple>
+          Выбери до 5 PDF или перетащи сюда
+        </label>
+        <div id="docList" class="docList"></div>
       </div>
-      <div class="note" style="margin-top:8px">Можно отметить сразу несколько сертификатов — подпишем документ каждым по очереди, одним файлом на выходе.</div>
-    </div>
-  </section>
+    </section>
 
-  <section>
-    <div class="head"><span>3 · Оттиск</span></div>
-    <div class="body">
-      <div class="note" style="margin-top:0">Отметка формируется по ГОСТ Р 7.0.97: заголовок, номер сертификата, владелец, срок действия, дата подписания.</div>
-      <div id="sealPrev" style="margin:12px 0"></div>
-      <details class="adv">
-        <summary>Расширенные настройки</summary>
-        <div class="advBody">
-          <div class="field">
-            <label>Причина подписания (/Reason)</label>
-            <input type="text" id="reason" value="Подписание документа">
-          </div>
-          <div class="row3">
-            <div class="field">
-              <label>Страница (0 — последняя)</label>
-              <input type="number" id="page" value="0" min="0">
-            </div>
-            <div class="field">
-              <label>Отступ справа, пт</label>
-              <input type="number" id="mr" value="40" min="0">
-            </div>
-            <div class="field">
-              <label>Отступ снизу, пт</label>
-              <input type="number" id="mb" value="40" min="0">
+    <section>
+      <div class="head"><span>2 · Сертификат</span>
+        <button class="ghost" id="reload" style="padding:5px 12px;font-size:12px">Обновить список</button>
+      </div>
+      <div class="body">
+        <div class="certSelect" id="certSelect">
+          <button type="button" class="certTrigger" id="certTrigger" disabled>
+            <span class="txt" id="certTriggerText">Загрузка хранилища…</span>
+            <svg class="chev" viewBox="0 0 20 20" fill="none"><path d="M5 7.5 10 12.5 15 7.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="certPanel" id="certPanel" hidden>
+            <input type="text" id="certSearch" class="certSearch" placeholder="Поиск по имени или номеру сертификата…">
+            <div class="certList" id="certs"></div>
+            <div class="certPanelFooter">
+              <span id="certSelectedCount" class="note" style="margin:0">0 выбрано</span>
+              <button type="button" class="ghost" id="certDone" style="padding:5px 12px;font-size:12px">Готово</button>
             </div>
           </div>
         </div>
-      </details>
-    </div>
-  </section>
+        <div class="note" style="margin-top:8px">Можно отметить сразу несколько сертификатов — подпишем документ каждым по очереди, одним файлом на выходе.</div>
+      </div>
+    </section>
 
-  <section>
-    <div class="head"><span>4 · Подписать</span></div>
-    <div class="body">
-      <div class="flex">
-        <button class="primary" id="sign" disabled>Подписать и встроить в PDF</button>
-        <span id="signHint" class="note" style="margin:0"></span>
+    <section>
+      <div class="head"><span>3 · Оттиск</span></div>
+      <div class="body">
+        <div class="note" style="margin-top:0">Отметка формируется по ГОСТ Р 7.0.97: заголовок, номер сертификата, владелец, срок действия, дата подписания.</div>
+        <div id="sealPrev" style="margin:12px 0"></div>
+        <details class="adv">
+          <summary>Расширенные настройки</summary>
+          <div class="advBody">
+            <div class="field">
+              <label>Причина подписания (/Reason)</label>
+              <input type="text" id="reason" value="Подписание документа">
+            </div>
+            <div class="row3">
+              <div class="field">
+                <label>Страница (0 — последняя)</label>
+                <input type="number" id="page" value="0" min="0">
+              </div>
+              <div class="field">
+                <label>Отступ справа, пт</label>
+                <input type="number" id="mr" value="40" min="0">
+              </div>
+              <div class="field">
+                <label>Отступ снизу, пт</label>
+                <input type="number" id="mb" value="40" min="0">
+              </div>
+            </div>
+          </div>
+        </details>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section>
-    <div class="head"><span>5 · Проверка открепленной подписи</span></div>
-    <div class="body">
-      <div class="note" style="margin-top:0">Любой файл (не только PDF) + отдельный файл подписи (.sig, .p7s, .cms) — КриптоПро проверит пару и покажет данные подписанта.</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
-        <label class="fileSmall">
-          <input type="file" id="detFile">
-          <span id="detFileName">Документ — не выбран</span>
-        </label>
-        <label class="fileSmall">
-          <input type="file" id="detSig" accept=".sig,.p7s,.cms,.der">
-          <span id="detSigName">Подпись (.sig / .p7s) — не выбрана</span>
-        </label>
+    <section>
+      <div class="head"><span>4 · Подписать</span></div>
+      <div class="body">
+        <div class="flex">
+          <button class="primary" id="sign" disabled>Подписать и встроить в PDF</button>
+          <span id="signHint" class="note" style="margin:0"></span>
+        </div>
       </div>
-      <div class="flex" style="margin-top:12px">
-        <button class="ghost" id="detVerifyBtn" disabled>Проверить подпись</button>
+    </section>
+  </div>
+
+  <div id="tab-verify" hidden>
+    <section>
+      <div class="head"><span>Встроенная подпись (PAdES)</span></div>
+      <div class="body">
+        <div class="note" style="margin-top:0">Загрузи PDF — все встроенные ГОСТ-подписи будут проверены автоматически.</div>
+        <label class="file" id="verifyDrop">
+          <input type="file" id="verifyPdf" accept="application/pdf" multiple>
+          Выбери PDF или перетащи сюда
+        </label>
+        <div id="verifyPdfList" class="verifyList"></div>
       </div>
-      <div id="detResult"></div>
-    </div>
-  </section>
+    </section>
+
+    <section>
+      <div class="head"><span>Открепленная подпись (.sig / .p7s)</span></div>
+      <div class="body">
+        <div class="note" style="margin-top:0">Любой файл + отдельный файл подписи — КриптоПро проверит пару и покажет данные подписанта.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+          <label class="fileSmall">
+            <input type="file" id="detFile">
+            <span id="detFileName">Документ — не выбран</span>
+          </label>
+          <label class="fileSmall">
+            <input type="file" id="detSig" accept=".sig,.p7s,.cms,.der">
+            <span id="detSigName">Подпись (.sig / .p7s) — не выбрана</span>
+          </label>
+        </div>
+        <div class="flex" style="margin-top:12px">
+          <button class="ghost" id="detVerifyBtn" disabled>Проверить подпись</button>
+        </div>
+        <div id="detResult"></div>
+      </div>
+    </section>
+  </div>
 
   <section>
     <div class="head"><span>Журнал</span></div>
@@ -1201,6 +1234,79 @@ const drop=$('drop');
 ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor='var(--seal)';}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor='';}));
 drop.addEventListener('drop',e=>loadPdfFiles(e.dataTransfer.files));
+
+// ---------- табы ----------
+function switchTab(t){
+  $('tab-sign').hidden = t!=='sign';
+  $('tab-verify').hidden = t!=='verify';
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===t));
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
+
+// ---------- встроенная проверка (вкладка Проверка) ----------
+async function verifyEmbedded(name, bytes){
+  const list=$('verifyPdfList');
+  const item=document.createElement('div');
+  item.className='verifyItem';
+  item.innerHTML=`<div class="who">${name}</div><div class="sigLine dim">проверяю…</div>`;
+  list.appendChild(item);
+  const statusEl=item.querySelector('.sigLine');
+
+  let sigs;
+  try{ sigs=findAllPdfSignatures(bytes); }
+  catch(e){ statusEl.textContent='Ошибка разбора PDF'; return; }
+  if(!sigs.length){ statusEl.textContent='Подписей не найдено'; return; }
+
+  try{ await ensurePlugin(); }
+  catch(e){ statusEl.textContent='Плагин недоступен'; return; }
+
+  const rows=[];
+  const lines=[];
+  for(let s=0;s<sigs.length;s++){
+    const sig=sigs[s];
+    const [p1,l1,p2,l2]=sig.byteRange;
+    const sb=new Uint8Array(l1+l2);
+    sb.set(bytes.slice(p1,p1+l1),0);
+    sb.set(bytes.slice(p2,p2+l2),l1);
+    const res=await runOneSigVerify(sb,sig.contents);
+    rows.push(res);
+    const nm=res.signer?res.signer.name:'неизвестен';
+    const dt=res.signer?res.signer.to.toLocaleDateString('ru-RU'):'?';
+    if(res.ok)
+      lines.push(`<span class="ok">✓ Подпись ${s+1}: действительна — ${nm} (до ${dt})</span>`);
+    else if(res.kind==='expired')
+      lines.push(`<span class="warn">⚠ Подпись ${s+1}: сертификат истёк (${dt}), ${nm} — крипт. верна</span>`);
+    else
+      lines.push(`<span class="err">✗ Подпись ${s+1}: недействительна</span>`);
+  }
+  statusEl.innerHTML=lines.join('<br>');
+
+  const lr={docName:name,docBytes:bytes,sigBytes:null,sigName:null,rows,date:new Date()};
+  const btn=document.createElement('button');
+  btn.className='ghost'; btn.style.cssText='padding:4px 10px;font-size:12px;margin-top:8px';
+  btn.textContent='Скачать протокол ZIP';
+  btn.onclick=()=>downloadProtocolZip(lr);
+  item.appendChild(btn);
+}
+
+$('verifyPdf').onchange=e=>{
+  [...e.target.files].forEach(file=>{
+    const r=new FileReader();
+    r.onload=()=>verifyEmbedded(file.name,new Uint8Array(r.result));
+    r.readAsArrayBuffer(file);
+  });
+  e.target.value='';
+};
+const verifyDrop=$('verifyDrop');
+['dragover','dragenter'].forEach(ev=>verifyDrop.addEventListener(ev,e=>{e.preventDefault();verifyDrop.style.borderColor='var(--seal)';}));
+['dragleave','drop'].forEach(ev=>verifyDrop.addEventListener(ev,e=>{e.preventDefault();verifyDrop.style.borderColor='';}));
+verifyDrop.addEventListener('drop',e=>{
+  [...e.dataTransfer.files].forEach(file=>{
+    const r=new FileReader();
+    r.onload=()=>verifyEmbedded(file.name,new Uint8Array(r.result));
+    r.readAsArrayBuffer(file);
+  });
+});
 
 // ---------- открепленная проверка — файловые инпуты ----------
 function readFileInto(input, nameEl, cb){
