@@ -289,7 +289,10 @@
 
   <div id="tab-verify" hidden>
     <section>
-      <div class="head"><span>Встроенная подпись (PAdES)</span></div>
+      <div class="head">
+        <span>Встроенная подпись (PAdES)</span>
+        <button class="ghost" id="clearEmbedded" hidden style="padding:4px 12px;font-size:12px">Очистить</button>
+      </div>
       <div class="body">
         <div class="note" style="margin-top:0">Загрузи PDF — все встроенные ГОСТ-подписи будут проверены автоматически.</div>
         <label class="file" id="verifyDrop">
@@ -301,7 +304,10 @@
     </section>
 
     <section>
-      <div class="head"><span>Открепленная подпись (.sig / .p7s)</span></div>
+      <div class="head">
+        <span>Открепленная подпись (.sig / .p7s)</span>
+        <button class="ghost" id="clearDetached" hidden style="padding:4px 12px;font-size:12px">Очистить</button>
+      </div>
       <div class="body">
         <div class="note" style="margin-top:0">Выбери документ и файл подписи — проверка запустится автоматически как только оба выбраны.</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
@@ -1051,6 +1057,7 @@ async function verifyDetachedPair(docObj, sigObj){
   const label=`${docObj.name} · проверено ${date.toLocaleString('ru-RU')} · ${location.hostname}`;
   item.innerHTML=buildVerifyCard(res,label,lr);
   item.querySelector('.protoZipBtn').onclick=()=>downloadProtocolZip(lr);
+  $('clearDetached').hidden=false;
   log(`Откр. подпись «${docObj.name}»: `+(res.ok?'✓ действительна':res.kind==='expired'?'⚠ серт. истёк':'✗ недействит.'), res.ok?'ok':res.kind==='expired'?'warn':'err');
 }
 
@@ -1473,6 +1480,7 @@ async function verifyEmbedded(name, bytes, docLastModified){
   wrapper.innerHTML=rows.map(r=>buildVerifyCard(r,label,lr)).join('');
   wrapper.querySelectorAll('.protoZipBtn').forEach(btn=>btn.onclick=()=>downloadProtocolZip(lr));
   placeholder.replaceWith(wrapper);
+  $('clearEmbedded').hidden=false;
 }
 
 $('verifyPdf').onchange=e=>{
@@ -1496,6 +1504,24 @@ verifyDrop.addEventListener('drop',e=>{
 
 // ---------- открепленная проверка — два отдельных инпута ----------
 let detDoc=null, detSig=null;
+
+function resetDetVerify(){
+  detDoc=null; detSig=null;
+  $('detResult').innerHTML='';
+  $('detDocName').textContent='Документ — не выбран';
+  $('detSigName').textContent='Подпись (.sig / .p7s) — не выбрана';
+  $('detDocFile').value='';
+  $('detSigFile').value='';
+  $('clearDetached').hidden=true;
+}
+$('clearDetached').onclick=resetDetVerify;
+
+function resetEmbeddedVerify(){
+  $('verifyPdfList').innerHTML='';
+  $('clearEmbedded').hidden=true;
+}
+$('clearEmbedded').onclick=resetEmbeddedVerify;
+
 async function tryDetVerify(){
   if(!detDoc||!detSig) return;
   $('detResult').innerHTML='';
