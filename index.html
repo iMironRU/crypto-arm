@@ -288,12 +288,18 @@
     <section>
       <div class="head"><span>Открепленная подпись (.sig / .p7s)</span></div>
       <div class="body">
-        <div class="note" style="margin-top:0">Выбери или перетащи сразу оба файла — документ и .sig/.p7s. Пары подбираются автоматически по имени.</div>
-        <label class="file" id="detDrop">
-          <input type="file" id="detFiles" multiple>
-          Выбери или перетащи документ + файл подписи (.sig)
-        </label>
-        <div id="detResult" class="verifyList"></div>
+        <div class="note" style="margin-top:0">Выбери документ и файл подписи — проверка запустится автоматически как только оба выбраны.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+          <label class="fileSmall" id="detDocLabel">
+            <input type="file" id="detDocFile">
+            <span id="detDocName">Документ — не выбран</span>
+          </label>
+          <label class="fileSmall" id="detSigLabel">
+            <input type="file" id="detSigFile" accept=".sig,.p7s,.cms,.der">
+            <span id="detSigName">Подпись (.sig / .p7s) — не выбрана</span>
+          </label>
+        </div>
+        <div id="detResult" class="verifyList" style="margin-top:10px"></div>
       </div>
     </section>
   </div>
@@ -854,32 +860,6 @@ async function verifyDoc(i){
   showVerifyBanner(rows,d.name);
 }
 
-const SIG_EXTS = /\.(sig|p7s|cms|der)$/i;
-
-function pairDetachedFiles(files){
-  const sigs = files.filter(f => SIG_EXTS.test(f.name));
-  const docs = files.filter(f => !SIG_EXTS.test(f.name));
-  const usedSigs = new Set();
-  const pairs = [];
-  for(const doc of docs){
-    const base = doc.name;
-    const matched = sigs.find(s => !usedSigs.has(s.name) && (
-      s.name === base+'.sig' || s.name === base+'.p7s' ||
-      s.name.replace(SIG_EXTS,'') === base ||
-      s.name.replace(SIG_EXTS,'') === base.replace(/\.[^.]+$/,'')
-    ));
-    pairs.push({doc, sig: matched||null});
-    if(matched) usedSigs.add(matched.name);
-  }
-  // если один документ и одна подпись не совпали по имени — всё равно парим
-  if(docs.length===1 && sigs.length===1 && pairs[0].sig===null){
-    pairs[0].sig = sigs[0];
-  }
-  // подписи без документа
-  sigs.filter(s=>!usedSigs.has(s.name)).forEach(s=>pairs.push({doc:null,sig:s}));
-  return pairs;
-}
-
 function readFileAsObj(file){
   return new Promise(res=>{
     const r=new FileReader();
@@ -1354,22 +1334,25 @@ verifyDrop.addEventListener('drop',e=>{
   });
 });
 
-// ---------- открепленная проверка — файловые инпуты ----------
-async function handleDetFiles(files){
-  if(!files.length) return;
+// ---------- открепленная проверка — два отдельных инпута ----------
+let detDoc=null, detSig=null;
+async function tryDetVerify(){
+  if(!detDoc||!detSig) return;
   $('detResult').innerHTML='';
-  const pairs=pairDetachedFiles([...files]);
-  for(const {doc,sig} of pairs){
-    const docObj=doc?await readFileAsObj(doc):null;
-    const sigObj=sig?await readFileAsObj(sig):null;
-    await verifyDetachedPair(docObj,sigObj);
-  }
+  await verifyDetachedPair(detDoc, detSig);
 }
-$('detFiles').onchange=e=>{ handleDetFiles(e.target.files); e.target.value=''; };
-const detDrop=$('detDrop');
-['dragover','dragenter'].forEach(ev=>detDrop.addEventListener(ev,e=>{e.preventDefault();detDrop.style.borderColor='var(--seal)';}));
-['dragleave','drop'].forEach(ev=>detDrop.addEventListener(ev,e=>{e.preventDefault();detDrop.style.borderColor='';}));
-detDrop.addEventListener('drop',e=>handleDetFiles(e.dataTransfer.files));
+$('detDocFile').onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  $('detDocName').textContent=f.name;
+  readFileAsObj(f).then(obj=>{ detDoc=obj; tryDetVerify(); });
+  e.target.value='';
+};
+$('detSigFile').onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  $('detSigName').textContent=f.name;
+  readFileAsObj(f).then(obj=>{ detSig=obj; tryDetVerify(); });
+  e.target.value='';
+};
 
 function refreshSignBtn(){
   const ok = docs.length>0 && selected.size>0;
