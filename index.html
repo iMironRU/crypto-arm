@@ -165,12 +165,27 @@
     cursor:pointer;transition:all .15s;text-align:center}
   .tab:hover{color:var(--ink);border-color:var(--seal)}
   .tab.active{background:var(--seal);border-color:var(--seal);color:#fff}
-  .verifyList{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+  .verifyList{display:flex;flex-direction:column;gap:10px;margin-top:10px}
   .verifyItem{border:1px solid var(--line);background:var(--field);border-radius:var(--radius-sm);padding:10px 12px}
   .verifyItem .who{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px}
   .verifyItem .sigLine{font-size:12.5px;line-height:1.7}
   .verifyItem .sigLine .ok{color:var(--seal-dark)}.verifyItem .sigLine .warn{color:#7a5000}.verifyItem .sigLine .err{color:var(--warn)}
-  .verifyItem .protoRow{margin-top:8px}
+  /* ── карточка протокола ── */
+  .protoCard{border-radius:var(--radius-sm);padding:14px 16px;border-left:4px solid}
+  .protoCard.ok{background:#f0faf4;border-color:var(--seal)}
+  .protoCard.warn{background:#fffbea;border-color:#d4a017}
+  .protoCard.err{background:#fdf2f2;border-color:var(--warn)}
+  .protoStatus{font-size:15px;font-weight:700;margin-bottom:4px}
+  .protoStatus.ok{color:var(--seal-dark)}
+  .protoStatus.warn{color:#7a5000}
+  .protoStatus.err{color:var(--warn)}
+  .protoLabel{font-size:11px;color:var(--muted);margin-bottom:10px}
+  .protoGrid{display:flex;flex-direction:column;gap:4px}
+  .protoRow{display:grid;grid-template-columns:130px 1fr;gap:8px;font-size:12.5px;align-items:baseline}
+  .protoLbl{color:var(--muted);font-size:11.5px;white-space:nowrap}
+  .protoErr span:last-child{color:var(--warn)}
+  .protoWarn{margin-top:8px;font-size:11.5px;color:#7a5000;border-top:1px solid #e8c84c55;padding-top:8px}
+  .mono{font-family:var(--mono);font-size:11px;word-break:break-all}
 </style>
 </head>
 <body>
@@ -693,7 +708,7 @@ async function runOneSigVerify(contentBytes, sigBytes){
   const cp=window.cadesplugin;
   const contentB64=u8ToBase64(contentBytes);
   const sigB64=u8ToBase64(sigBytes);
-  let ok=false, kind=null, rawErr=null, oSD=null;
+  let ok=false, kind=null, rawErr=null, oSD=null, sigMethod=null;
   log(`[dbg] контент ${contentBytes.length} байт, подпись ${sigBytes.length} байт`,'dim');
 
   // VerifyCades(sig, type, bDetached) — официальный метод async API КриптоПро.
@@ -711,7 +726,7 @@ async function runOneSigVerify(contentBytes, sigBytes){
       await oSD.propset_Content(contentB64);
       await oSD[method](...args);
       log(`[dbg] ${method} — успех`,'dim');
-      ok=true; break;
+      ok=true; sigMethod=method; break;
     }catch(e){
       const msg=errText(e);
       log(`[dbg] ${method} → ${msg}`,'dim');
@@ -736,77 +751,136 @@ async function runOneSigVerify(contentBytes, sigBytes){
         const s=await signers.Item(1);
         const cert=await s.Certificate;
         const subj=await cert.SubjectName;
+        let issuer='';
+        try{ const isn=await cert.IssuerName; issuer=(isn.match(/CN=([^,]+)/)||[])[1]||''; }catch(_){}
         signer={
           name:(subj.match(/CN=([^,]+)/)||[])[1]||subj,
           serial:await cert.SerialNumber,
           from:new Date(await cert.ValidFromDate),
           to:new Date(await cert.ValidToDate),
+          issuer,
         };
       }
     }
   }catch(_){}
-  return {ok,kind,rawErr,signer};
+  return {ok,kind,rawErr,signer,sigMethod};
 }
 
-async function buildProtocolPdf(rows, docName, verifyDate){
+async function sha256hex(bytes){
+  const buf=await crypto.subtle.digest('SHA-256',bytes);
+  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+async function buildProtocolPdf(rows, meta){
+  const {docName,docBytes,sigName,verifyDate,verifyUrl,buildVer,sigMethod}=meta;
   const doc=await PDFDocument.create();
   doc.registerFontkit(fontkit);
   const font=await doc.embedFont(b64ToU8(FONT_B64));
-  const W=595,H=842,ML=50,MR=50,MT=60;
+  const W=595,H=842,ML=50,MR=50,MT=50;
   const page=doc.addPage([W,H]);
   const green=rgb(0.12,0.36,0.24),red=rgb(0.72,0.14,0.14),amber=rgb(0.60,0.35,0.02);
-  const ink=rgb(0.1,0.1,0.1),muted=rgb(0.45,0.45,0.45);
+  const ink=rgb(0.08,0.08,0.08),muted=rgb(0.45,0.45,0.45),light=rgb(0.70,0.70,0.70);
   let y=H-MT;
-  const line=(txt,sz,col,x=ML)=>{
-    if(y<ML+30) return;
-    page.drawText(String(txt).slice(0,120),{x,y,size:sz,font,color:col||ink});
-    y-=sz*1.65;
+
+  const text=(txt,sz,col,x=ML,maxLen=110)=>{
+    if(y<ML+20) return;
+    const s=String(txt);
+    // простой перенос длинных строк
+    const words=s.split(' ');
+    let cur='';
+    for(const w of words){
+      if((cur+' '+w).trim().length>maxLen){
+        if(cur){ page.drawText(cur.trim(),{x,y,size:sz,font,color:col||ink}); y-=sz*1.5; cur=''; }
+      }
+      cur+=' '+w;
+    }
+    if(cur.trim()){ page.drawText(cur.trim(),{x,y,size:sz,font,color:col||ink}); y-=sz*1.5; }
   };
-  line('ПРОТОКОЛ ПРОВЕРКИ ЭЛЕКТРОННОЙ ПОДПИСИ',13,green);
-  y-=8;
-  line(`Документ: ${docName}`,9,muted);
-  line(`Дата проверки: ${verifyDate.toLocaleString('ru-RU')}`,9,muted);
-  line(`Подписей проверено: ${rows.length}`,9,muted);
-  y-=10;
-  page.drawLine({start:{x:ML,y},end:{x:W-MR,y},thickness:0.5,color:rgb(0.82,0.82,0.82)});
-  y-=14;
+  const gap=(n=8)=>{ y-=n; };
+  const hline=()=>{ page.drawLine({start:{x:ML,y},end:{x:W-MR,y},thickness:0.4,color:light}); y-=10; };
+
+  // ── Заголовок ──────────────────────────────────────────────────────────────
+  text('ПРОТОКОЛ ПРОВЕРКИ ЭЛЕКТРОННОЙ ПОДПИСИ',13,green);
+  gap(4);
+  hline();
+
+  // ── 1. Что проверялось ─────────────────────────────────────────────────────
+  text('1. Представленные материалы',9,muted);
+  gap(4);
+  text(`Документ:        ${docName}`,9,ink);
+  text(`Размер:          ${(docBytes.length/1024).toFixed(1)} КБ (${docBytes.length} байт)`,9,ink);
+  const hash=await sha256hex(docBytes);
+  text(`SHA-256:         ${hash.slice(0,32)}`,8,muted);
+  text(`                 ${hash.slice(32)}`,8,muted);
+  if(sigName) text(`Файл подписи:    ${sigName}`,9,ink);
+  gap(4); hline();
+
+  // ── 2. Когда и где проверялось ─────────────────────────────────────────────
+  text('2. Условия проверки',9,muted);
+  gap(4);
+  text(`Дата и время:    ${verifyDate.toLocaleString('ru-RU',{dateStyle:'long',timeStyle:'medium'})}`,9,ink);
+  text(`Сервис:          ${verifyUrl}`,9,ink);
+  text(`Версия:          ${buildVer||'—'}`,9,ink);
+  text(`Метод:           КриптоПро ЭЦП Browser Plug-in · CAdES-BES · ${sigMethod||'VerifyCades'}`,9,ink);
+  gap(4); hline();
+
+  // ── 3. Результаты по каждой подписи ───────────────────────────────────────
+  text('3. Результаты проверки',9,muted);
+  gap(6);
   rows.forEach((r,i)=>{
     if(y<ML+80) return;
     const col=r.ok?green:r.kind==='expired'?amber:red;
-    const status=r.ok?'ДЕЙСТВИТЕЛЬНА':r.kind==='expired'?'СЕРТИФИКАТ ИСТЁК (крипт. верна)':'НЕДЕЙСТВИТЕЛЬНА';
-    line(`Подпись №${i+1}  —  ${status}`,11,col);
+    const status=r.ok?'ДЕЙСТВИТЕЛЬНА':r.kind==='expired'?'СЕРТИФИКАТ ИСТЁК (математически верна)':'НЕДЕЙСТВИТЕЛЬНА';
+    text(`Подпись ${i+1}: ${status}`,11,col);
+    gap(3);
     if(r.signer){
-      line(`  Подписант:    ${r.signer.name}`,9,ink,ML+8);
-      const ser=(r.signer.serial||'').match(/.{1,4}/g)||[];
-      line(`  Серийный №:   ${ser.join(':')}`,8,muted,ML+8);
+      text(`  Подписант:      ${r.signer.name}`,9,ink,ML+6,104);
+      const ser=(r.signer.serial||'').toUpperCase().match(/.{1,4}/g)||[];
+      text(`  Серийный №:     ${ser.join(' ')}`,8,muted,ML+6,104);
       const df=r.signer.from.toLocaleDateString('ru-RU'),dt=r.signer.to.toLocaleDateString('ru-RU');
-      line(`  Действителен: ${df} — ${dt}`,9,r.kind==='expired'?amber:muted,ML+8);
+      text(`  Срок действия:  ${df} — ${dt}`,9,r.kind==='expired'?amber:ink,ML+6,104);
+      if(r.signer.issuer) text(`  Издатель:       ${r.signer.issuer}`,8,muted,ML+6,104);
     }else{
-      line(`  Данные подписанта недоступны`,9,muted,ML+8);
+      text(`  Данные подписанта недоступны`,9,muted,ML+6);
     }
     if(r.kind==='expired'){
-      line(`  Подпись математически верна; сертификат истёк на момент проверки.`,8,amber,ML+8);
-      line(`  На момент подписания сертификат мог быть действителен.`,8,amber,ML+8);
+      gap(2);
+      text(`  Подпись математически верна. Сертификат истёк на момент проверки.`,8,amber,ML+6,104);
+      text(`  Для признания подписи юридически значимой необходима проверка`,8,amber,ML+6,104);
+      text(`  метки времени (TSP) или другого подтверждения срока действия.`,8,amber,ML+6,104);
     }
-    if(r.kind&&r.kind!=='expired'&&r.rawErr)
-      line(`  Ошибка: ${errText(r.rawErr).slice(0,100)}`,8,red,ML+8);
-    y-=10;
+    if(!r.ok && r.kind!=='expired' && r.rawErr){
+      gap(2);
+      text(`  Ошибка: ${errText(r.rawErr)}`,8,red,ML+6,104);
+    }
+    gap(10);
   });
-  page.drawLine({start:{x:ML,y:ML+22},end:{x:W-MR,y:ML+22},thickness:0.4,color:rgb(0.88,0.88,0.88)});
-  page.drawText(`Сформировано: ${verifyDate.toLocaleString('ru-RU')} · imironru.github.io/crypto-arm`,
-    {x:ML,y:ML+8,size:7,font,color:muted});
+  hline();
+
+  // ── Подвал ─────────────────────────────────────────────────────────────────
+  page.drawText(
+    `Сформировано: ${verifyDate.toLocaleString('ru-RU')} · ${verifyUrl}`,
+    {x:ML,y:ML+6,size:7,font,color:light}
+  );
   return doc.save();
 }
 
 async function downloadProtocolZip(results){
-  const {docName,docBytes,sigBytes,sigName,rows,date}=results;
+  const {docName,docBytes,sigBytes,sigName,rows,date,sigMethod}=results;
   log('формирую протокол и архив…','dim');
   try{
     const {default:JSZip}=await import('https://esm.sh/jszip@3.10.1');
     const zip=new JSZip();
     zip.file(docName,docBytes);
     if(sigBytes&&sigName) zip.file(sigName,sigBytes);
-    const pdfBytes=await buildProtocolPdf(rows,docName,date);
+    const meta={
+      docName, docBytes, sigName: sigName||null,
+      verifyDate: date,
+      verifyUrl: location.hostname+location.pathname,
+      buildVer: ($('buildInfo')||{}).textContent||'',
+      sigMethod: sigMethod||'VerifyCades',
+    };
+    const pdfBytes=await buildProtocolPdf(rows,meta);
     const safe=docName.replace(/[^\w.\-]/g,'_');
     zip.file(`protokol_${safe}.pdf`,pdfBytes);
     const blob=await zip.generateAsync({type:'blob'});
@@ -818,20 +892,15 @@ async function downloadProtocolZip(results){
   }catch(e){ log('ошибка при создании протокола: '+errText(e),'err'); }
 }
 
-function showVerifyBanner(rows, docName){
-  const nOk=rows.filter(r=>r.ok).length;
-  const nExp=rows.filter(r=>r.kind==='expired').length;
-  const nBad=rows.filter(r=>!r.ok&&r.kind!=='expired').length;
-  const parts=[];
-  if(nOk)  parts.push(`✓ ${nOk} действит.`);
-  if(nExp) parts.push(`⚠ ${nExp} истёкший серт.`);
-  if(nBad) parts.push(`✗ ${nBad} недействит.`);
-  const cls=nBad?'err':nExp?'warn':'ok';
-  $('env').innerHTML=`<div class="banner ${cls}">
-    Проверка «${docName}»: ${parts.join(', ')} &nbsp;
-    <button type="button" class="ghost" id="protoBtn" style="padding:4px 10px;font-size:12px">Скачать протокол ZIP</button>
-  </div>`;
-  $('protoBtn').onclick=()=>downloadProtocolZip(lastVerifyResults);
+function showVerifyBanner(rows, docName, lr){
+  const container=document.getElementById('verifyPdfList')||$('env');
+  const date=lr.date;
+  const label=`${docName} · проверено ${date.toLocaleString('ru-RU')} · ${location.hostname}`;
+  const cards=rows.map(r=>buildVerifyCard(r,label,lr)).join('');
+  const div=document.createElement('div');
+  div.innerHTML=cards;
+  div.querySelectorAll('.protoZipBtn').forEach(btn=>btn.onclick=()=>downloadProtocolZip(lr));
+  container.appendChild(div);
 }
 
 async function verifyDoc(i){
@@ -865,8 +934,9 @@ async function verifyDoc(i){
       log(`✗ Подпись ${s+1}: недействительна — ${errText(res.rawErr)}`,'err');
     }
   }
-  lastVerifyResults={docName:d.name,docBytes:d.bytes,sigBytes:null,sigName:null,rows,date:new Date()};
-  showVerifyBanner(rows,d.name);
+  const lr={docName:d.name,docBytes:d.bytes,sigBytes:null,sigName:null,rows,date:new Date(),sigMethod:rows[0]&&rows[0].sigMethod};
+  lastVerifyResults=lr;
+  showVerifyBanner(rows,d.name,lr);
 }
 
 function readFileAsObj(file){
@@ -877,38 +947,53 @@ function readFileAsObj(file){
   });
 }
 
+function buildVerifyCard(res, label, lr){
+  const ok=res.ok, exp=res.kind==='expired';
+  const statusCls=ok?'ok':exp?'warn':'err';
+  const statusText=ok?'Подпись действительна':exp?'Сертификат истёк — математически верна':'Подпись недействительна';
+  const nm=res.signer?res.signer.name:'неизвестен';
+  const serial=res.signer?((res.signer.serial||'').toUpperCase().match(/.{1,4}/g)||[]).join(' '):'—';
+  const from=res.signer?res.signer.from.toLocaleDateString('ru-RU'):'—';
+  const to=res.signer?res.signer.to.toLocaleDateString('ru-RU'):'—';
+  const issuer=res.signer&&res.signer.issuer?res.signer.issuer:'—';
+  const errLine=!ok&&!exp&&res.rawErr?`<div class="protoRow protoErr"><span class="protoLbl">Ошибка</span><span>${errText(res.rawErr).slice(0,200)}</span></div>`:'';
+  const warnLine=exp?`<div class="protoWarn">Для признания подписи юридически значимой необходима проверка метки времени (TSP).</div>`:'';
+  return `<div class="protoCard ${statusCls}">
+    <div class="protoStatus ${statusCls}">${statusText}</div>
+    <div class="protoLabel">${label}</div>
+    <div class="protoGrid">
+      <div class="protoRow"><span class="protoLbl">Подписант</span><span>${nm}</span></div>
+      <div class="protoRow"><span class="protoLbl">Серийный №</span><span class="mono">${serial}</span></div>
+      <div class="protoRow"><span class="protoLbl">Срок действия</span><span${exp?' class="warn"':''}>${from} — ${to}</span></div>
+      <div class="protoRow"><span class="protoLbl">Издатель</span><span>${issuer}</span></div>
+      <div class="protoRow"><span class="protoLbl">Метод</span><span>КриптоПро ЭЦП · CAdES-BES · ${res.sigMethod||'—'}</span></div>
+      ${errLine}
+    </div>
+    ${warnLine}
+    <button class="ghost protoZipBtn" style="margin-top:10px;padding:5px 14px;font-size:12px">Скачать протокол ZIP</button>
+  </div>`;
+}
+
 async function verifyDetachedPair(docObj, sigObj){
   const list=$('detResult');
   const item=document.createElement('div');
-  item.className='verifyItem';
   if(!docObj||!sigObj){
+    item.className='verifyItem';
     item.innerHTML=`<div class="who">${(docObj||sigObj).name}</div>
       <div class="sigLine err">✗ ${!docObj?'не найден документ для этой подписи':'не найден файл подписи (.sig/.p7s)'}</div>`;
     list.appendChild(item); return;
   }
-  item.innerHTML=`<div class="who">${docObj.name} + ${sigObj.name}</div><div class="sigLine dim">проверяю…</div>`;
+  item.innerHTML=`<div class="verifyItem"><div class="who">${docObj.name} + ${sigObj.name}</div><div class="sigLine dim">проверяю…</div></div>`;
   list.appendChild(item);
-  const statusEl=item.querySelector('.sigLine');
   try{ await ensurePlugin(); }
-  catch(e){ statusEl.innerHTML=`<span class="err">Плагин недоступен</span>`; return; }
+  catch(e){ item.innerHTML=`<div class="verifyItem"><div class="sigLine err">Плагин недоступен</div></div>`; return; }
   const res=await runOneSigVerify(docObj.bytes,sigObj.bytes);
-  const nm=res.signer?res.signer.name:'неизвестен';
-  const dt=res.signer?res.signer.to.toLocaleDateString('ru-RU'):'?';
-  let line;
-  if(res.ok)
-    line=`<span class="ok">✓ Действительна — ${nm} (до ${dt})</span>`;
-  else if(res.kind==='expired')
-    line=`<span class="warn">⚠ Сертификат истёк (${dt}), ${nm} — крипт. верна</span>`;
-  else
-    line=`<span class="err">✗ Недействительна — ${errText(res.rawErr).slice(0,80)}</span>`;
-  statusEl.innerHTML=line;
+  const date=new Date();
+  const lr={docName:docObj.name,docBytes:docObj.bytes,sigBytes:sigObj.bytes,sigName:sigObj.name,rows:[res],date,sigMethod:res.sigMethod};
+  const label=`${docObj.name} · проверено ${date.toLocaleString('ru-RU')} · ${location.hostname}`;
+  item.innerHTML=buildVerifyCard(res,label,lr);
+  item.querySelector('.protoZipBtn').onclick=()=>downloadProtocolZip(lr);
   log(`Откр. подпись «${docObj.name}»: `+(res.ok?'✓ действительна':res.kind==='expired'?'⚠ серт. истёк':'✗ недействит.'), res.ok?'ok':res.kind==='expired'?'warn':'err');
-  const lr={docName:docObj.name,docBytes:docObj.bytes,sigBytes:sigObj.bytes,sigName:sigObj.name,rows:[res],date:new Date()};
-  const btn=document.createElement('button');
-  btn.className='ghost'; btn.style.cssText='padding:4px 10px;font-size:12px;margin-top:8px';
-  btn.textContent='Скачать протокол ZIP';
-  btn.onclick=()=>downloadProtocolZip(lr);
-  item.appendChild(btn);
 }
 
 // ---------- инкрементальная подпись ----------
@@ -1299,47 +1384,36 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchTab(b.dataset.t
 // ---------- встроенная проверка (вкладка Проверка) ----------
 async function verifyEmbedded(name, bytes){
   const list=$('verifyPdfList');
-  const item=document.createElement('div');
-  item.className='verifyItem';
-  item.innerHTML=`<div class="who">${name}</div><div class="sigLine dim">проверяю…</div>`;
-  list.appendChild(item);
-  const statusEl=item.querySelector('.sigLine');
+  const placeholder=document.createElement('div');
+  placeholder.className='verifyItem';
+  placeholder.innerHTML=`<div class="who">${name}</div><div class="sigLine dim">проверяю…</div>`;
+  list.appendChild(placeholder);
 
   let sigs;
   try{ sigs=findAllPdfSignatures(bytes); }
-  catch(e){ statusEl.textContent='Ошибка разбора PDF'; return; }
-  if(!sigs.length){ statusEl.textContent='Подписей не найдено'; return; }
+  catch(e){ placeholder.querySelector('.sigLine').textContent='Ошибка разбора PDF'; return; }
+  if(!sigs.length){ placeholder.querySelector('.sigLine').textContent='Подписей не найдено'; return; }
 
   try{ await ensurePlugin(); }
-  catch(e){ statusEl.textContent='Плагин недоступен'; return; }
+  catch(e){ placeholder.querySelector('.sigLine').textContent='Плагин недоступен'; return; }
 
   const rows=[];
-  const lines=[];
   for(let s=0;s<sigs.length;s++){
     const sig=sigs[s];
     const [p1,l1,p2,l2]=sig.byteRange;
     const sb=new Uint8Array(l1+l2);
     sb.set(bytes.slice(p1,p1+l1),0);
     sb.set(bytes.slice(p2,p2+l2),l1);
-    const res=await runOneSigVerify(sb,sig.contents);
-    rows.push(res);
-    const nm=res.signer?res.signer.name:'неизвестен';
-    const dt=res.signer?res.signer.to.toLocaleDateString('ru-RU'):'?';
-    if(res.ok)
-      lines.push(`<span class="ok">✓ Подпись ${s+1}: действительна — ${nm} (до ${dt})</span>`);
-    else if(res.kind==='expired')
-      lines.push(`<span class="warn">⚠ Подпись ${s+1}: сертификат истёк (${dt}), ${nm} — крипт. верна</span>`);
-    else
-      lines.push(`<span class="err">✗ Подпись ${s+1}: недействительна</span>`);
+    rows.push(await runOneSigVerify(sb,sig.contents));
   }
-  statusEl.innerHTML=lines.join('<br>');
 
-  const lr={docName:name,docBytes:bytes,sigBytes:null,sigName:null,rows,date:new Date()};
-  const btn=document.createElement('button');
-  btn.className='ghost'; btn.style.cssText='padding:4px 10px;font-size:12px;margin-top:8px';
-  btn.textContent='Скачать протокол ZIP';
-  btn.onclick=()=>downloadProtocolZip(lr);
-  item.appendChild(btn);
+  const date=new Date();
+  const lr={docName:name,docBytes:bytes,sigBytes:null,sigName:null,rows,date,sigMethod:rows[0]&&rows[0].sigMethod};
+  const label=`${name} · проверено ${date.toLocaleString('ru-RU')} · ${location.hostname}`;
+  const wrapper=document.createElement('div');
+  wrapper.innerHTML=rows.map(r=>buildVerifyCard(r,label,lr)).join('');
+  wrapper.querySelectorAll('.protoZipBtn').forEach(btn=>btn.onclick=()=>downloadProtocolZip(lr));
+  placeholder.replaceWith(wrapper);
 }
 
 $('verifyPdf').onchange=e=>{
