@@ -694,20 +694,22 @@ async function runOneSigVerify(contentBytes, sigBytes){
   const contentB64=u8ToBase64(contentBytes);
   const sigB64=u8ToBase64(sigBytes);
   let ok=false, kind=null, rawErr=null, oSD=null;
+  log(`[dbg] контент ${contentBytes.length} байт, подпись ${sigBytes.length} байт`,'dim');
 
-  // Пробуем оба имени метода: новые версии плагина — VerifyDetachedAsync,
-  // старые — VerifyDetached (без суффикса Async)
   for(const method of ['VerifyDetachedAsync','VerifyDetached']){
     try{
+      log(`[dbg] пробую ${method}…`,'dim');
       oSD=await cp.CreateObjectAsync('CAdESCOM.CadesSignedData');
       await oSD.propset_ContentEncoding(CADESCOM_BASE64_TO_BINARY);
       await oSD.propset_Content(contentB64);
       await oSD[method](sigB64,CADESCOM_CADES_BES);
+      log(`[dbg] ${method} — успех`,'dim');
       ok=true; break;
     }catch(e){
       const msg=errText(e);
+      log(`[dbg] ${method} → ${msg}`,'dim');
       if(/is not a function|не является функцией/i.test(msg)){
-        oSD=null; continue; // метод не найден — пробуем следующий
+        oSD=null; continue;
       }
       rawErr=e; kind=classifyVerifyErr(e); break;
     }
