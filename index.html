@@ -716,7 +716,7 @@ async function runOneSigVerify(contentBytes, sigBytes){
   const cp=window.cadesplugin;
   const contentB64=u8ToBase64(contentBytes);
   const sigB64=u8ToBase64(sigBytes);
-  let ok=false, kind=null, rawErr=null, oSD=null, sigMethod=null;
+  let ok=false, kind=null, rawErr=null, oSD=null, sigMethod=null, contentHashHex=null, signAlgOid=null;
   log(`[dbg] контент ${contentBytes.length} байт, подпись ${sigBytes.length} байт`,'dim');
 
   // VerifyCades(sig, type, bDetached) — официальный метод async API КриптоПро.
@@ -756,18 +756,26 @@ async function runOneSigVerify(contentBytes, sigBytes){
   let signer=null;
 
   function parseSubject(dn){
-    // разбираем DN вида "CN=Имя, O=Орг, T=Должность, L=Город, ..."
     const get=(key)=>{
-      const re=new RegExp('(?:^|,\\s*)'+key+'=([^,]+)','i');
+      const re=new RegExp('(?:^|,\\s*)'+key.replace(/\./g,'\\.')+'=([^,]+)','i');
       return (dn.match(re)||[])[1]?.trim()||'';
     };
+    // Person name: GIVENNAME+SN, or G+SN, else CN
+    const gn=get('GIVENNAME')||get('G')||get('2\\.5\\.4\\.42');
+    const sn=get('SURNAME')||get('SN')||get('2\\.5\\.4\\.4');
+    const person=(sn&&gn)?sn+' '+gn:(sn||gn)||'';
     return {
-      cn:   get('CN'),
-      org:  get('O'),
-      unit: get('OU'),
-      pos:  get('T'),
-      city: get('L'),
-      email:get('E')||get('EMAILADDRESS'),
+      cn:    get('CN'),
+      name:  person||get('CN'),
+      org:   get('O'),
+      unit:  get('OU'),
+      pos:   get('T'),
+      city:  get('L'),
+      email: get('E')||get('EMAILADDRESS'),
+      inn:   get('1.2.643.3.131.1.1')||get('ИНН')||get('INN'),
+      innfl: get('1.2.643.100.4'),
+      ogrn:  get('1.2.643.100.1')||get('ОГРН')||get('OGRN'),
+      snils: get('1.2.643.100.3')||get('СНИЛС')||get('SNILS'),
     };
   }
 
@@ -786,11 +794,15 @@ async function runOneSigVerify(contentBytes, sigBytes){
     const certFrom=new Date(await cert.ValidFromDate);
     const certTo=new Date(await cert.ValidToDate);
     return {
-      name: subjParsed.cn||subj,
+      name: subjParsed.name||subjParsed.cn||subj,
       org:  subjParsed.org,
       pos:  subjParsed.pos,
       city: subjParsed.city,
       email:subjParsed.email,
+      inn:  subjParsed.inn,
+      innfl:subjParsed.innfl,
+      ogrn: subjParsed.ogrn,
+      snils:subjParsed.snils,
       serial:await cert.SerialNumber,
       from:certFrom, to:certTo, issuer, signingTime,
       validAtSigning: signingTime ? (signingTime>=certFrom && signingTime<=certTo) : null,
@@ -831,16 +843,33 @@ async function runOneSigVerify(contentBytes, sigBytes){
         log('[dbg] запускаю ГОСТ-математику…','dim');
         const gm=verifyGOSTMath(contentBytes,sigBytes);
         if(gm&&gm.ok){
-          kind='expired'; // математически верна, cert chain не проверен
+          kind='expired';
+          if(gm.contentHashHex) contentHashHex=gm.contentHashHex;
+          if(gm.signAlgOid) signAlgOid=gm.signAlgOid;
         } else if(gm&&gm.reason==='wrongDocument'){
           kind='wrongDoc';
+          if(gm.contentHashHex) contentHashHex=gm.contentHashHex;
+          if(gm.signAlgOid) signAlgOid=gm.signAlgOid;
         }
         // unsupported / invalidSig / null → kind='chain'
       }catch(eg){ log('[dbg] gost-math → '+errText(eg),'dim'); }
     }
   }
 
-  return {ok,kind,rawErr,signer,sigMethod};
+  // Отпечаток сертификата (SHA-256 от DER-байт)
+  let fingerprint=null;
+  if(signer?.certDer){
+    try{
+      const fp=new Uint8Array(await crypto.subtle.digest('SHA-256',signer.certDer));
+      fingerprint=[...fp].map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase();
+    }catch(_){}
+  }
+  // signAlgOid из ASN.1 signer (если gost-math не запускался)
+  if(!signAlgOid && signer?.signAlgOid) signAlgOid=signer.signAlgOid;
+
+  return {ok,kind,rawErr,signer,sigMethod,
+          contentSize:contentBytes.length, sigSize:sigBytes.length,
+          contentHashHex, signAlgOid, fingerprint};
 }
 
 async function sha256hex(bytes){
@@ -893,7 +922,9 @@ function extractCMSSignerInfo(raw){
   // certificates [0]
   if(p>=sd.end||(d[p]&0xe0)!==0xa0) return null;
   const certsCtx=tlv(p); p=certsCtx.end;
-  const cert=tlv(certsCtx.voff), tbs=tlv(cert.voff);
+  const certTagPos=certsCtx.voff;
+  const cert=tlv(certTagPos), tbs=tlv(cert.voff);
+  const certDer=d.slice(certTagPos, cert.end); // raw DER for fingerprint
   let q=tbs.voff;
   if((d[q]&0xe0)===0xa0) q=tlv(q).end; // version [0]
 
@@ -906,8 +937,12 @@ function extractCMSSignerInfo(raw){
   const from=time(nbT),to=time(naT);
   const subjDN=dn(tlv(q));
 
-  // signingTime из signerInfo signedAttrs
-  let signingTime=null;
+  // Person name: SN+GN if present, else CN
+  const surname=g(subjDN,'2.5.4.4'), givenname=g(subjDN,'2.5.4.42');
+  const personName=(surname&&givenname)?surname+' '+givenname:(surname||givenname)||g(subjDN,'2.5.4.3');
+
+  // signAlgOid and signingTime from signerInfo
+  let signingTime=null, signAlgOid=null;
   try{
     let sip=p;
     if(sip<sd.end&&(d[sip]&0xe0)===0xa0&&(d[sip]&0x1f)===1) sip=tlv(sip).end; // skip cRLs [1]
@@ -915,20 +950,30 @@ function extractCMSSignerInfo(raw){
     let sp=siT.voff;
     sp=tlv(sp).end; sp=tlv(sp).end; sp=tlv(sp).end; // version, sid, digestAlgorithm
     if(sp<siT.end&&(d[sp]&0xe0)===0xa0){ // signedAttrs [0]
-      const saT=tlv(sp);
+      const saT=tlv(sp); sp=saT.end;
       for(let ap=saT.voff;ap<saT.end;){const at=tlv(ap);ap=at.end;const aot=tlv(at.voff);if(oid(aot)==='1.2.840.113549.1.9.5'){signingTime=time(tlv(tlv(aot.end).voff));break;}}
     }
+    // signatureAlgorithm OID
+    if(sp<siT.end){ const saSeq=tlv(sp); signAlgOid=oid(tlv(saSeq.voff)); }
   }catch(_){}
 
   return{
-    name:  g(subjDN,'2.5.4.3'),
+    name:  personName,
     org:   g(subjDN,'2.5.4.10'),
     pos:   g(subjDN,'2.5.4.12'),
     city:  g(subjDN,'2.5.4.7'),
     email: g(subjDN,'1.2.840.113549.1.9.1','1.2.840.113549.1.9.20'),
+    inn:   g(subjDN,'1.2.643.3.131.1.1'),
+    innfl: g(subjDN,'1.2.643.100.4'),
+    ogrn:  g(subjDN,'1.2.643.100.1'),
+    snils: g(subjDN,'1.2.643.100.3'),
     serial, from, to,
     issuer: g(issuerDN,'2.5.4.3'),
+    issuerInn: g(issuerDN,'1.2.643.3.131.1.1'),
+    issuerOgrn: g(issuerDN,'1.2.643.100.1'),
     signingTime,
+    signAlgOid,
+    certDer,
     validAtSigning: signingTime?(signingTime>=from&&signingTime<=to):null,
   };
 }
@@ -992,9 +1037,10 @@ function verifyGOSTMath(contentBytes, sigBytes){
     const H=GostEngine.getGostDigest({name:'GOST R 34.11',version:2012,length:256});
     const cu8=contentBytes instanceof Uint8Array?contentBytes:new Uint8Array(contentBytes);
     const cHash=new Uint8Array(H.digest(cu8.buffer));
+    const contentHashHex=[...cHash].map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase();
     if(cHash.length!==msgDigest.length||!cHash.every((b,i)=>b===msgDigest[i])){
       log('[gost] хэш документа ≠ messageDigest → неверный документ','err');
-      return{ok:false,reason:'wrongDocument'};
+      return{ok:false,reason:'wrongDocument',contentHashHex,signAlgOid};
     }
     // Streebog-256 of signedAttrs
     const saHash=new Uint8Array(H.digest(saForHash.buffer));
@@ -1002,7 +1048,7 @@ function verifyGOSTMath(contentBytes, sigBytes){
     const SE=GostEngine.getGostSign({name:'GOST R 34.10',version:2012,namedCurve:'S-256-A',procreator:'CP'});
     const valid=SE.verify(pubKey.buffer,sigValue.buffer,saHash.buffer);
     log('[gost] математика: '+(valid?'✓ ВЕРНА':'✗ НЕВЕРНА'),valid?'ok':'err');
-    return{ok:valid,reason:valid?null:'invalidSig'};
+    return{ok:valid,reason:valid?null:'invalidSig',contentHashHex,signAlgOid};
   }catch(e){ log('[gost] ошибка: '+e.message,'dim'); return null; }
 }
 
@@ -1233,6 +1279,12 @@ async function getPluginVersion(){
   }catch(_){ return null; }
 }
 
+const SIGN_ALG_NAMES={
+  '1.2.643.7.1.1.1.1':'ГОСТ Р 34.10-2012 (256 бит)',
+  '1.2.643.7.1.1.1.2':'ГОСТ Р 34.10-2012 (512 бит)',
+  '1.2.643.2.2.19':   'ГОСТ Р 34.10-2001',
+};
+
 function buildVerifyCard(res, label, lr){
   const ok=res.ok, exp=res.kind==='expired';
   const chainWithCert=!ok&&!exp&&res.kind==='chain'&&!!res.signer;
@@ -1243,37 +1295,67 @@ function buildVerifyCard(res, label, lr){
     :chainWithCert?'Математическая проверка невозможна'
     :wrongDoc?'НЕВЕРНЫЙ ДОКУМЕНТ'
     :'Подпись недействительна';
+
   const s=res.signer;
-  const nm=s?s.name:'неизвестен';
-  const serial=s?((s.serial||'').toUpperCase().match(/.{1,4}/g)||[]).join(' '):'—';
+  const nm=s?.name||'неизвестен';
+  const serial=s?((s.serial||'').toUpperCase().match(/.{1,4}/g)||[]).join(' '):'—';
   const from=s?s.from.toLocaleDateString('ru-RU'):'—';
   const to=s?s.to.toLocaleDateString('ru-RU'):'—';
   const issuer=s?.issuer||'—';
   const signingTime=s?.signingTime;
   const vas=s?.validAtSigning;
+
+  // Форматирование вспомогательных значений
+  const fmtHash=h=>h?`<span class="mono" style="font-size:11px;word-break:break-all">${h.match(/.{1,8}/g).join('​')}</span>`:'';
+  const fmtFp=h=>h?`<span class="mono" style="font-size:11px">${h.match(/.{2}/g).join(':')}</span>`:'';
+  const fmtSize=b=>b?`${b.toLocaleString('ru-RU')} байт`:'';
+  const algOid=res.signAlgOid||s?.signAlgOid;
+  const algName=algOid?(SIGN_ALG_NAMES[algOid]||algOid):'';
+
   const row=(lbl,val,cls='')=>val?`<div class="protoRow"><span class="protoLbl">${lbl}</span><span${cls?' class="'+cls+'"':''}>${val}</span></div>`:'';
+  const divider=`<div class="protoRow" style="grid-column:1/-1;border-top:1px solid var(--line);margin:4px 0"></div>`;
+
   const signingTimeRow=signingTime?row('Время подписания',signingTime.toLocaleString('ru-RU')):'';
   const vasRow=(exp||chainWithCert)&&signingTime?row('Серт. при подписании',
     vas===true?'Был действителен':vas===false?'Уже не действовал':'Не удалось определить',
     vas===true?'ok':vas===false?'err':'warn'):'';
+
+  // Статус математики и цепочки отдельными строками (как Минцифры)
+  const mathStatusRow=exp?row('Электронная подпись','Математически верна','ok')
+    :ok?row('Электронная подпись','Математически верна','ok'):'';
+  const chainStatusRow=exp?row('Цепочка сертификатов','Срок действия истёк','warn')
+    :ok?row('Цепочка сертификатов','Действительна','ok')
+    :chainWithCert?row('Цепочка сертификатов','Не проверена (нет доступа к CRL/OCSP)','warn'):'';
+
   const errLine=!ok&&!exp&&!chainWithCert&&!wrongDoc&&res.rawErr?row('Ошибка',errText(res.rawErr).slice(0,200),'err'):'';
   const warnLine=exp&&vas!==true?`<div class="protoWarn">Для признания подписи юридически значимой необходима проверка метки времени (TSP).</div>`:'';
   const chainWarn=chainWithCert?`<div class="protoWarn">КриптоПро не смог проверить подпись — недоступна цепочка сертификатов (сертификат истёк или нет доступа к CRL/OCSP). Данные подписанта извлечены из файла подписи, но <strong>соответствие этому документу не подтверждено</strong>.</div>`:'';
   const wrongDocWarn=wrongDoc?`<div class="protoWarn" style="background:var(--warn-soft);border-left:3px solid var(--warn)"><strong>Подпись не соответствует загруженному файлу.</strong> Вероятно, был загружен другой документ или файл подписи был создан для иного документа.</div>`:'';
+
   return `<div class="protoCard ${statusCls}">
     <div class="protoStatus ${statusCls}">${statusText}</div>
     <div class="protoLabel">${label}</div>
     <div class="protoGrid">
-      ${row('ФИО / CN',nm)}
+      ${row('ФИО',nm)}
       ${row('Организация',s?.org)}
       ${row('Должность',s?.pos)}
       ${row('Город',s?.city)}
       ${row('Email',s?.email)}
-      ${row('Серийный №',`<span class="mono">${serial}</span>`)}
+      ${s?.inn?row('ИНН',s.inn):''}
+      ${s?.innfl?row('ИНН ФЛ',s.innfl):''}
+      ${s?.ogrn?row('ОГРН',s.ogrn):''}
+      ${s?.snils?row('СНИЛС',s.snils):''}
+      ${row('Серийный №',`<span class="mono" style="font-size:11.5px">${serial}</span>`)}
       <div class="protoRow"><span class="protoLbl">Срок действия</span><span${(exp||chainWithCert)?' class="warn"':''}>${from} — ${to}</span></div>
       ${signingTimeRow}${vasRow}
       ${row('Издатель',issuer)}
-      ${row('Метод','КриптоПро ЭЦП · CAdES-BES · '+(res.sigMethod||'—'))}
+      ${divider}
+      ${mathStatusRow}${chainStatusRow}
+      ${algName?row('Алгоритм подписи',algName):''}
+      ${res.contentHashHex?row('Хэш документа (Streebog-256)',fmtHash(res.contentHashHex)):''}
+      ${res.fingerprint?row('Отпечаток (SHA-256)',fmtFp(res.fingerprint)):''}
+      ${res.contentSize?row('Размер документа',fmtSize(res.contentSize)):''}
+      ${res.sigSize?row('Размер подписи',fmtSize(res.sigSize)):''}
       ${errLine}
     </div>
     ${warnLine}${chainWarn}${wrongDocWarn}
